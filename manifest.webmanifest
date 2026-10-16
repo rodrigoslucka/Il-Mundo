@@ -1,0 +1,15 @@
+{
+  "id": "./",
+  "name": "Il Mundo | Gestión de pizzería",
+  "short_name": "Il Mundo",
+  "description": "Pedidos, cocina, mesas y caja para la operación diaria de la pizzería.",
+  "lang": "es",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#fff8ef",
+  "theme_color": "#c34b2f",
+  "icons": [
+    { "src": "./assets/pizza.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
