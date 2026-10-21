@@ -233,8 +233,66 @@ export function createCashWorkbook(state) {
   return zipStoredFiles(files);
 }
 
+export function createDailyBalanceWorkbook(state, dateKey) {
+  if (!state || !Array.isArray(state.orders) || !state.settings || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error("No se encontraron pedidos válidos para exportar el balance del día.");
+  }
+  const orders = state.orders.filter((order) => order.date === dateKey && order.payment?.paidAt);
+  const payments = orders.map((order) => ({
+    orderId: order.id,
+    paidAt: order.payment.paidAt,
+    method: order.payment.method || order.paymentMethod || "",
+    amount: cents(order.payment.amount ?? orderTotalForExport(order)),
+  }));
+  const totals = createPaymentTotals(payments, state.settings.paymentMethods || ["Efectivo", "QR"]);
+  const total = cents(payments.reduce((sum, payment) => sum + payment.amount, 0));
+  const methodRows = Object.entries(totals).map(([method, amount]) => [method, cents(amount)]);
+  const summaryRows = [
+    [`Balance del día — ${state.settings.businessName || "Il Mundo"}`],
+    ["Fecha", dateKey],
+    ["Pedidos pagados", String(orders.length)],
+    ["Total vendido", total],
+    [],
+    ["Medio de pago", "Importe"],
+    ...methodRows,
+  ];
+  const paymentRows = [
+    [`Pedidos pagados — ${state.settings.businessName || "Il Mundo"}`],
+    [],
+    ["Pedido", "Hora de pago", "Modalidad", "Cliente", "Medio de pago", "Importe"],
+    ...orders.map((order) => [
+      order.number ? `#${String(order.number).padStart(3, "0")}` : order.id || "",
+      order.payment.paidAt || "",
+      order.channel === "dinein" ? "En mesa" : order.channel === "delivery" ? "Delivery" : "Para llevar",
+      order.customerName || "",
+      order.payment.method || order.paymentMethod || "",
+      cents(order.payment.amount ?? orderTotalForExport(order)),
+    ]),
+  ];
+  if (summaryRows.length > 1_048_576 || paymentRows.length > 1_048_576) {
+    throw new Error("El balance supera el máximo de filas que Excel admite por hoja.");
+  }
+  const files = [
+    ...workbookEntries,
+    ["xl/worksheets/sheet1.xml", worksheet(summaryRows, [28, 24], [1], 5)],
+    ["xl/worksheets/sheet2.xml", worksheet(paymentRows, [18, 25, 18, 28, 20, 16], [5], 2)],
+  ];
+  return zipStoredFiles(files);
+}
+
+function orderTotalForExport(order) {
+  return Array.isArray(order.items)
+    ? order.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0) + Number(order.deliveryFee || 0)
+    : 0;
+}
+
 export function cashWorkbookFilename(date = new Date()) {
   const offset = date.getTimezoneOffset() * 60_000;
   const dateKey = new Date(date.getTime() - offset).toISOString().slice(0, 10);
   return `il-mundo-balance-caja-${dateKey}.xlsx`;
+}
+
+export function dailyBalanceWorkbookFilename(dateKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) throw new Error("La fecha del balance no es válida.");
+  return `il-mundo-balance-dia-${dateKey}.xlsx`;
 }

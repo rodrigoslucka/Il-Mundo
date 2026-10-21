@@ -5,12 +5,24 @@ import {
   loadState,
   NAVIGATION,
   orderTotal,
-  ROLES,
   saveState,
   todayKey,
   validateState,
-} from "./data.js?v=6";
-import { createCashWorkbook, cashWorkbookFilename } from "./features/cash/export.js";
+} from "./data.js?v=8";
+import {
+  getWorkspaceProfile,
+  inviteOrManageStaff,
+  loadWorkspace,
+  refreshWorkspace,
+  requestPasswordReset,
+  saveWorkspace,
+  signIn,
+  signOut,
+  subscribeWorkspace,
+  supabase,
+  updatePassword,
+} from "./backend.js";
+import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
 import { createPaymentTotals } from "./features/cash/totals.js";
 import { renderCashPage } from "./features/cash/page.js";
 
@@ -51,13 +63,26 @@ let state;
 let screen = "orders";
 let modal = null;
 let draft = null;
-let menuFilter = "all";
 let teamFilter = "all";
+let settingsTab = "menu";
 let audioContext = null;
 let installPrompt = null;
+let authenticatedUser = null;
+let backendProfile = null;
+let backendRevision = 0;
+let backendUnsubscribe = null;
+let backendWriteQueue = Promise.resolve();
+let pendingBackendWrites = 0;
+let backendSyncBlocked = false;
+let loadingUserId = "";
+let loginMessage = "";
+let loginBusy = false;
+let passwordRecovery = false;
+let soundEnabledOnDevice = localStorage.getItem("ilmundo.sound.enabled") === "true";
+let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
-  { id: "orders", label: "Caja", icon: "wallet", roles: ["owner", "cashier", "waiter", "delivery"] },
-  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "cashier", "kitchen"] },
+  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
+  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner"] },
 ];
 
 function icon(name, extraClass = "") {
@@ -118,6 +143,52 @@ function persist(mutator, successMessage) {
   const next = JSON.parse(JSON.stringify(state));
   try {
     mutator(next);
+  } catch (error) {
+    console.error("No se pudieron preparar los cambios.", error);
+    notify(`No se guardaron los cambios: ${error.message || "error inesperado"}.`, "error", 6000);
+    return false;
+  }
+  if (backendProfile) {
+    if (backendSyncBlocked) {
+      notify("Actualiza el espacio compartido antes de seguir guardando.", "warning", 5000);
+      return false;
+    }
+    if (!navigator.onLine) {
+      notify("Necesitas conexión para guardar cambios en el espacio compartido.", "warning", 5000);
+      return false;
+    }
+    state = next;
+    render();
+    pendingBackendWrites += 1;
+    const snapshot = JSON.parse(JSON.stringify(next));
+    backendWriteQueue = backendWriteQueue.then(async () => {
+      if (!backendProfile || backendSyncBlocked) return;
+      const saved = await saveWorkspace(snapshot, backendRevision, backendProfile.role);
+      backendRevision = saved.revision;
+    }).catch(async (error) => {
+      console.error("No se pudieron sincronizar los cambios con Supabase.", error);
+      backendSyncBlocked = true;
+      try {
+        if (authenticatedUser && backendProfile) {
+          const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
+          backendRevision = latest.revision;
+          state = validateState(latest.state);
+          modal = null;
+          draft = null;
+          render();
+        }
+      } catch (refreshError) {
+        console.error("No se pudo recuperar el estado compartido después del error.", refreshError);
+      }
+      render();
+      notify(`No se sincronizaron los cambios: ${error.message || "error de conexión"}. Actualiza los datos antes de continuar.`, "error", 7000);
+    }).finally(() => {
+      pendingBackendWrites = Math.max(0, pendingBackendWrites - 1);
+    });
+    if (successMessage) notify(successMessage);
+    return true;
+  }
+  try {
     saveState(next);
   } catch (error) {
     console.error("No se pudieron guardar los cambios locales.", error);
@@ -132,6 +203,18 @@ function persist(mutator, successMessage) {
 
 function hasActiveRole(...roles) {
   return roles.includes(state.activeRole);
+}
+
+function isAdmin() {
+  return state.activeRole === "owner";
+}
+
+function memberRoleGroup(role) {
+  return role === "owner" ? "admin" : "worker";
+}
+
+function memberRoleLabel(role) {
+  return memberRoleGroup(role) === "admin" ? "Administrador" : "Trabajador";
 }
 
 function allowedScreen(page) {
@@ -151,7 +234,7 @@ function navigationLink(item, mobile = false) {
 }
 
 function banner() {
-  return `<div class="demo-banner">${icon("alert")}<span><strong>Modo de demostración.</strong> Los datos se guardan solo en este navegador: todavía no hay cuentas seguras ni sincronización entre dispositivos. No introduzcas información real de clientes.</span></div>`;
+  return `<div class="demo-banner">${icon("wifi")}<span><strong>Espacio compartido.</strong> Los pedidos y el menú se sincronizan entre los dispositivos conectados. La caja solo está disponible para administradores.</span></div>`;
 }
 
 function renderModalLayer() {
@@ -169,11 +252,13 @@ function renderModalLayer() {
 
 function frame(pageContent) {
   const navItems = OPERATING_MODES.filter((item) => item.roles.includes(state.activeRole));
-  const title = OPERATING_MODES.find((item) => item.id === screen)?.label || (screen === "settings" ? "Ajustes" : state.settings.businessName);
+  const settingsTitle = settingsTab === "users" ? "Usuarios y roles" : "Menú";
+  const title = OPERATING_MODES.find((item) => item.id === screen)?.label
+    || (["settings", "menu", "team"].includes(screen) ? settingsTitle : state.settings.businessName);
   const online = navigator.onLine;
-  const compactCash = screen === "orders" && state.activeRole !== "delivery";
+  const compactCash = screen === "orders";
   const session = activeCashSession(state);
-  const cashAction = compactCash && hasActiveRole("owner", "cashier")
+  const cashAction = compactCash && isAdmin()
     ? button(session ? "close-cash" : "open-cash", session ? "Cerrar caja" : "Abrir caja", { kind: "soft", icon: "wallet", extra: "small-button cash-header-action" })
     : "";
   return `<div class="app-shell ${screen === "kitchen" ? "kitchen-mode" : ""} ${compactCash ? "cash-entry-mode" : ""}">
@@ -186,8 +271,8 @@ function frame(pageContent) {
       <nav class="nav-list" aria-label="Modos de trabajo">${navItems.map((item) => navigationLink(item)).join("")}</nav>
       <div class="sidebar-spacer"></div>
       <div class="offline-card">
-        <strong><span class="online-dot"></span> ${online ? "Almacenamiento local" : "Sin conexión"}</strong>
-        <p>Los cambios quedan en este dispositivo. La cocina de otro celular no los recibe.</p>
+        <strong><span class="online-dot"></span> ${online ? "Sincronización en línea" : "Sin conexión"}</strong>
+        <p>${online ? "Los cambios se guardan en el espacio compartido." : "No podrás guardar ni sincronizar cambios sin conexión."}</p>
       </div>
     </aside>
     <main class="main-area">
@@ -195,8 +280,10 @@ function frame(pageContent) {
         ${compactCash
           ? `<time class="cash-date">${businessDate()}</time>`
           : `<div class="topbar-title"><strong>${esc(title)}</strong><span>${esc(state.settings.businessName)} · ${businessDate()}</span></div>`}
-        <div class="topbar-actions">${compactCash ? cashAction : `<span class="clock" id="clock"></span><span class="connection-pill"><span class="online-dot"></span>${online ? "Modo local" : "Sin conexión"}</span>`}
-          ${state.activeRole === "owner" ? `<button class="icon-button" type="button" data-action="navigate:settings" title="Ajustes" aria-label="Ajustes">${icon("settings")}</button>` : ""}
+        <div class="topbar-actions">        ${compactCash ? cashAction : `<span class="clock" id="clock"></span><span class="connection-pill"><span class="online-dot"></span>${online ? "En línea" : "Sin conexión"}</span>`}
+          ${backendSyncBlocked ? `<button class="button soft small-button" type="button" data-action="refresh-workspace">Actualizar</button>` : ""}
+          ${isAdmin() ? `<button class="icon-button" type="button" data-action="navigate:settings" title="Configuración" aria-label="Configuración">${icon("settings")}</button>` : ""}
+          <button class="icon-button" type="button" data-action="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión">${icon("logout")}</button>
           ${installPrompt ? '<button class="button primary small-button" type="button" data-action="install-pwa">Instalar</button>' : ""}
         </div>
       </header>
@@ -271,19 +358,19 @@ function renderHome() {
   const paidToday = orders.filter((order) => order.payment?.paidAt);
   const totalToday = paidToday.reduce((sum, order) => sum + orderTotal(order), 0);
   const currentCash = activeCashSession(state);
-  const canSeeSales = hasActiveRole("owner", "cashier");
+  const canSeeSales = isAdmin();
   const nextOrders = [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
   const actions = [
-    { title: "Nuevo pedido", subtitle: "Tomar una comanda", icon: "plus", action: "new-order", allowed: hasActiveRole("owner", "cashier", "waiter") },
-    { title: "Ver cocina", subtitle: `${notReady.length} ${notReady.length === 1 ? "pedido pendiente" : "pedidos pendientes"}`, icon: "chef", action: "navigate:kitchen", allowed: hasActiveRole("owner", "cashier", "kitchen") },
+    { title: "Nuevo pedido", subtitle: "Tomar una comanda", icon: "plus", action: "new-order", allowed: true },
+    { title: "Ver cocina", subtitle: `${notReady.length} ${notReady.length === 1 ? "pedido pendiente" : "pedidos pendientes"}`, icon: "chef", action: "navigate:kitchen", allowed: isAdmin() },
     { title: "Abrir caja", subtitle: currentCash ? "La caja está abierta" : "Registrar monto inicial", icon: "wallet", action: "open-cash", allowed: canSeeSales && !currentCash },
-    { title: "Ver mesas", subtitle: `${state.tables.length} mesas`, icon: "table", action: "navigate:tables", allowed: hasActiveRole("owner", "cashier", "waiter") },
+    { title: "Ver mesas", subtitle: `${state.tables.length} mesas`, icon: "table", action: "navigate:tables", allowed: isAdmin() },
   ].filter((item) => item.allowed);
   const cashSummary = canSeeSales
-    ? `<section class="cash-callout"><div><strong>${currentCash ? "Caja abierta" : "Caja sin abrir"}</strong><p>${currentCash ? `Apertura ${clockTime(currentCash.openedAt)} · Las ventas se controlan desde Caja.` : "Abre el turno en Caja antes de registrar un pago."}</p></div>${button(currentCash ? "navigate:cash" : "open-cash", currentCash ? "Ver caja" : "Abrir caja", { kind: "soft", extra: "small-button", icon: "wallet" })}</section>`
+    ? `<section class="cash-callout"><div><strong>${currentCash ? "Caja abierta" : "Caja sin abrir"}</strong><p>${currentCash ? `Apertura ${clockTime(currentCash.openedAt)} · Los pagos se anotan al confirmar cada pedido.` : "Abre el turno antes de confirmar pedidos para incluir los pagos."}</p></div>${button(currentCash ? "navigate:cash" : "open-cash", currentCash ? "Ver caja" : "Abrir caja", { kind: "soft", extra: "small-button", icon: "wallet" })}</section>`
     : "";
-  return `${pageHeading("LA PIZZERÍA, DE UN VISTAZO", "Buen día", "Un espacio simple para coordinar el salón, la cocina y cada pedido.", hasActiveRole("owner", "cashier", "waiter") ? button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }) : "")}
-    ${cashSummary}
+  return `${pageHeading("LA PIZZERÍA, DE UN VISTAZO", "Buen día", "Un espacio simple para coordinar el salón, la cocina y cada pedido.", button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }))}
+    ${isAdmin() ? cashSummary : ""}
     <div class="metric-grid">
       <article class="card metric-card"><div class="metric-head"><span>Pedidos de hoy</span><span class="metric-icon">${icon("receipt")}</span></div><div class="metric-value">${orders.length}</div><div class="metric-foot">${notReady.length} ${notReady.length === 1 ? "en espera o cocina" : "en espera o cocina"}</div></article>
       <article class="card metric-card"><div class="metric-head"><span>Por preparar</span><span class="metric-icon">${icon("chef")}</span></div><div class="metric-value">${notReady.length}</div><div class="metric-foot">${orders.filter((order) => order.status === "ready").length} ${orders.filter((order) => order.status === "ready").length === 1 ? "pedido listo" : "pedidos listos"}</div></article>
@@ -295,55 +382,40 @@ function renderHome() {
         <div class="panel-title"><h2>Actividad reciente</h2><a href="#orders" data-nav="orders">Ver pedidos</a></div>
         <div class="activity-list">${nextOrders.length ? nextOrders.map(recentOrderRow).join("") : emptyState("Todo listo por aquí", "Cuando entre el primer pedido, su estado aparecerá en este espacio.")}</div>
       </section>
-      <section class="card panel">
+      ${actions.length ? `<section class="card panel">
         <div class="panel-title"><h2>Accesos rápidos</h2></div>
         <div class="quick-grid">${actions.map((item) => `<button type="button" class="quick-card" data-action="${esc(item.action)}"><span class="quick-card-icon">${icon(item.icon)}</span><span><strong>${esc(item.title)}</strong><span>${esc(item.subtitle)}</span></span></button>`).join("")}</div>
-      </section>
+      </section>` : ""}
     </div>`;
 }
 
 function orderCard(order) {
   const [statusText, statusClass] = statusMeta(order.status);
-  const paid = Boolean(order.payment?.paidAt);
-  const createdBy = getTeamMember(order.createdBy);
-  const assigned = getTeamMember(order.deliveryPersonId);
-  const role = state.activeRole;
-  const canPrepare = hasActiveRole("owner", "cashier", "kitchen");
-  const canDeliver = role === "delivery"
-    ? order.channel === "delivery" && order.status === "ready" && (!order.deliveryPersonId || order.deliveryPersonId === state.activeMemberId)
-    : hasActiveRole("owner", "cashier", "waiter") && order.status === "ready" && order.channel !== "delivery";
-  const canTakeDelivery = role === "delivery" && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
-  const canPay = hasActiveRole("owner", "cashier") && !paid && order.status !== "new" && order.status !== "preparing";
-  const canAssign = order.channel === "delivery" && order.status !== "delivered" && hasActiveRole("owner", "cashier", "waiter") && !order.deliveryPersonId;
-  const canUpdate = (order.status === "new" && canPrepare) || (order.status === "preparing" && canPrepare) || canDeliver || canTakeDelivery || canPay || canAssign;
+  const canPrepare = true;
+  const canTakeDelivery = order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
+  const canAssign = isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
+  const canUpdate = (order.status === "new" && canPrepare) || (order.status === "preparing" && canPrepare) || canTakeDelivery || canAssign;
   const actionButtons = [
     order.status === "new" && canPrepare ? button(`start-order:${order.id}`, "Empezar", { kind: "soft", extra: "small-button" }) : "",
     order.status === "preparing" && canPrepare ? button(`ready-order:${order.id}`, "Marcar listo", { kind: "primary", extra: "small-button" }) : "",
-    canDeliver ? button(`deliver-order:${order.id}`, role === "delivery" ? "Confirmar entrega" : "Entregar", { kind: "soft", extra: "small-button" }) : "",
-    canPay ? button(`pay-order:${order.id}`, "Registrar pago", { kind: "soft", extra: "small-button", icon: "card" }) : "",
     canAssign ? button(`assign-order:${order.id}`, "Asignar repartidor", { extra: "small-button", icon: "bike" }) : "",
     canTakeDelivery ? button(`take-delivery:${order.id}`, "Tomar pedido", { kind: "primary", extra: "small-button" }) : "",
   ].filter(Boolean).join("");
   const items = order.items.map((item) => `<div class="order-item-line"><strong>${item.quantity}× ${esc(item.name)}${item.variant ? ` · ${esc(item.variant)}` : ""}${item.extras?.length ? `<span class="secondary-line">Extra: ${item.extras.map(esc).join(", ")}</span>` : ""}${item.notes ? `<span class="secondary-line">Nota: ${esc(item.notes)}</span>` : ""}</strong><span>${formatMoney(item.price * item.quantity, state.settings.currency)}</span></div>`).join("");
   return `<article class="order-card">
-    <div class="order-card-head"><div><div class="order-id">${esc(orderDisplayId(order))}</div><div class="order-meta">${badge(statusText, statusClass)}${badge(channelLabel(order.channel), "type")}${badge(paid ? `Pagado · ${order.payment.method}` : order.paymentMethod ? `Pago previsto · ${order.paymentMethod}` : "Sin pago", paid ? "paid" : "unpaid")}</div></div><span class="ticket-age">${clockTime(order.createdAt)}</span></div>
-    <div class="order-meta">${order.tableName ? badge(order.tableName, "type") : ""}<span class="small muted">${esc(order.customerName || "Sin nombre")}${order.phone ? ` · ${esc(order.phone)}` : ""}</span></div>
+    <div class="order-card-head"><div><div class="order-id">${esc(orderDisplayId(order))}</div><div class="order-meta">${badge(statusText, statusClass)}${badge(channelLabel(order.channel), "type")}</div></div><span class="ticket-age">${clockTime(order.createdAt)}</span></div>
+    ${order.customerName ? `<div class="order-meta small muted">${esc(order.customerName)}</div>` : ""}
     <div class="order-items">${items}${order.channel === "delivery" && order.deliveryFee ? `<div class="order-item-line"><strong>Envío</strong><span>${formatMoney(order.deliveryFee, state.settings.currency)}</span></div>` : ""}</div>
     ${order.notes ? `<p class="order-notes">${icon("note")} ${esc(order.notes)}</p>` : ""}
-    ${order.channel === "delivery" ? `<p class="small muted">${assigned ? `Repartidor: ${esc(assigned.name)}` : "Pendiente de asignar repartidor"}${order.address ? ` · ${esc(order.address)}` : ""}</p>` : ""}
-    <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong><span>${createdBy ? `Tomó: ${esc(createdBy.name)}` : ""}${paid ? ` · ${esc(order.payment.method)}` : ""}</span></span><span class="order-actions">${canUpdate ? actionButtons : ""}</span></div>
+    ${order.channel === "delivery" && order.address ? `<p class="small muted">${esc(order.address)}</p>` : ""}
+    <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></span><span class="order-actions">${canUpdate ? actionButtons : ""}</span></div>
   </article>`;
 }
 
 function renderOrders() {
-  let orders = todayOrders();
-  if (state.activeRole === "delivery") {
-    orders = orders.filter((order) => order.channel === "delivery" && (!order.deliveryPersonId || order.deliveryPersonId === state.activeMemberId));
-  } else if (state.activeRole === "waiter") {
-    orders = orders.filter((order) => order.createdBy === state.activeMemberId || order.channel === "dinein");
-  }
+  const orders = todayOrders();
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const canCreateOrder = hasActiveRole("owner", "cashier", "waiter");
+  const canCreateOrder = true;
   if (!canCreateOrder) {
     return `${pageHeading("DELIVERY", "Entregas pendientes", "", "")}
       ${orders.length ? `<div class="order-grid">${orders.map(orderCard).join("")}</div>` : `<div class="card">${emptyState("No hay entregas pendientes", "Los pedidos asignados aparecerán aquí.")}</div>`}`;
@@ -382,7 +454,7 @@ function kitchenTicket(order) {
 }
 
 function renderKitchen() {
-  const all = todayOrders().filter((order) => order.status !== "delivered").sort((a, b) => {
+  const all = todayOrders().filter((order) => order.status !== "delivered" && order.status !== "ready").sort((a, b) => {
     const priority = { new: 0, preparing: 1, ready: 2 };
     return priority[a.status] - priority[b.status] || a.createdAt.localeCompare(b.createdAt);
   });
@@ -403,11 +475,11 @@ function kitchenOrderContent(orderId) {
     ${item.extras?.length ? `<p class="kitchen-modal-note">+ ${item.extras.map(esc).join(", ")}</p>` : ""}
     ${item.notes ? `<p class="kitchen-modal-note">${icon("note")}${esc(item.notes)}</p>` : ""}
   </article>`).join("");
-  const completeLabel = order.status === "ready" ? "Marcar como entregado" : "Completar pedido";
+  const completeLabel = "Pedido finalizado";
   const notes = order.notes ? `<p class="kitchen-modal-general-note">${icon("note")}${esc(order.notes)}</p>` : "";
   return {
     body: `<div class="kitchen-modal-order">
-      <div class="kitchen-modal-meta">${badge(statusText, statusClass)}${badge(order.payment?.paidAt ? `Pago ${order.payment.method}` : order.paymentMethod ? `Pago previsto · ${order.paymentMethod}` : "Sin pagar", order.payment?.paidAt ? "paid" : "unpaid")}<span>${esc(age)}</span></div>
+      <div class="kitchen-modal-meta">${badge(statusText, statusClass)}<span>${esc(age)}</span></div>
       <div class="kitchen-modal-items">${items}</div>
       ${notes}
     </div>`,
@@ -417,7 +489,7 @@ function kitchenOrderContent(orderId) {
 
 function occupiedTables() {
   return state.tables.filter((table) => todayOrders().some((order) =>
-    order.tableId === table.id && order.channel === "dinein" && order.status !== "delivered",
+    order.tableId === table.id && order.channel === "dinein" && !["ready", "delivered"].includes(order.status),
   ));
 }
 
@@ -426,7 +498,7 @@ function renderTables() {
   const freeCount = state.tables.length - busy.length;
   return `${pageHeading("SALÓN", "Mesas", `${freeCount} ${freeCount === 1 ? "mesa disponible" : "mesas disponibles"} · selecciona una mesa para iniciar una comanda.`, button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }))}
     <div class="table-grid">${state.tables.map((table) => {
-      const order = todayOrders().find((item) => item.tableId === table.id && item.channel === "dinein" && item.status !== "delivered");
+      const order = todayOrders().find((item) => item.tableId === table.id && item.channel === "dinein" && !["ready", "delivered"].includes(item.status));
       const isOccupied = Boolean(order);
       return `<button class="table-card ${isOccupied ? "occupied" : ""}" type="button" data-action="${isOccupied ? `view-order:${order.id}` : `new-table-order:${table.id}`}">
         <span class="table-shape">${icon("table")}</span><strong>${esc(table.name)}</strong><p>${table.seats} ${table.seats === 1 ? "asiento" : "asientos"}</p>
@@ -444,54 +516,35 @@ function pricePills(product) {
   return product.variants.map((variant) => `<span class="price-label">${esc(variant.name)} · ${formatMoney(variant.price, state.settings.currency)}</span>`).join("");
 }
 
-function renderMenu() {
-  if (!hasActiveRole("owner")) return `${pageHeading("MENÚ", "Acceso restringido", "Solo el dueño puede cambiar los productos y sus precios.")}`;
-  const menu = state.menu.filter((product) => menuFilter === "all" || (menuFilter === "active" ? product.active : !product.active));
-  const addProductButton = button("edit-product:new", "Agregar producto", { kind: "primary", icon: "plus" });
-  return `${pageHeading("CARTA Y PRECIOS", "Menú", "Los precios y los productos de abajo son ejemplos. Cámbialos antes de tomar pedidos reales.", addProductButton)}
-    <div class="filter-bar">${[["all", "Todos"], ["active", "Activos"], ["inactive", "Pausados"]].map(([id, label]) => `<button type="button" class="filter-chip ${menuFilter === id ? "selected" : ""}" data-action="filter-menu:${id}">${esc(label)}</button>`).join("")}<span class="small muted" style="margin-left:auto">${state.menu.filter((product) => product.active).length} productos activos</span></div>
-    <div class="product-admin-grid">${menu.length ? menu.map((product) => `<article class="product-admin ${product.active ? "" : "inactive"}"><div class="product-admin-head"><span><strong>${esc(product.name)}</strong><small>${esc(product.category)}</small></span>${badge(product.active ? "Disponible" : "Pausado", product.active ? "ready" : "off")}</div><div class="product-prices">${pricePills(product)}</div><div class="product-admin-actions">${button(`edit-product:${product.id}`, "Editar", { extra: "small-button" })}${button(`toggle-product:${product.id}`, product.active ? "Pausar" : "Activar", { kind: product.active ? "" : "soft", extra: "small-button" })}</div></article>`).join("") : emptyState("No hay productos en este filtro", "Prueba otra categoría o agrega el primer producto.", "menu")}</div>
-    <div class="notice" style="margin-top:16px">${icon("alert")}<span>Los montos iniciales y la moneda (USD) son solo ejemplos. Confirma la moneda y la carta reales antes de empezar a registrar ventas.</span></div>`;
-}
-
 function renderTeam() {
-  if (!hasActiveRole("owner")) return `${pageHeading("EQUIPO", "Acceso restringido", "Solo el dueño puede administrar el listado de perfiles.")}`;
-  const members = state.team.filter((member) => teamFilter === "all" || member.role === teamFilter);
-  const roleFilter = [["all", "Todos"], ...Object.entries(ROLES).map(([id, label]) => [id, label])];
-  return `${pageHeading("PERFILES PARA PROBAR LA INTERFAZ", "Equipo", "Los perfiles permiten previsualizar cada pantalla: no crean cuentas ni contraseñas seguras.", button("add-member", "Agregar perfil de prueba", { kind: "primary", icon: "plus" }))}
+  if (!isAdmin()) return `${pageHeading("CUENTAS", "Acceso restringido", "Solo el administrador puede administrar las cuentas.")}`;
+  const members = state.team.filter((member) => teamFilter === "all" || memberRoleGroup(member.role) === teamFilter);
+  const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["worker", "Trabajadores"]];
+  return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Invita por correo y administra los permisos de las cuentas.", button("add-member", "Invitar usuario", { kind: "primary", icon: "plus" }))}
     <div class="filter-bar">${roleFilter.map(([id, label]) => `<button class="filter-chip ${teamFilter === id ? "selected" : ""}" type="button" data-action="filter-team:${esc(id)}">${esc(label)}</button>`).join("")}</div>
-    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${esc(ROLES[member.role] || "Sin rol")} · rol simulado</span></span>${member.id === state.activeMemberId ? badge("Activo ahora", "preparing") : button(`switch-member:${member.id}`, "Vista previa", { extra: "small-button" })}${member.id.startsWith("staff-") && !["staff-owner", "staff-cashier", "staff-waiter", "staff-kitchen", "staff-delivery"].includes(member.id) ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar perfil">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin perfiles en este filtro", "Elige otro rol.")}</div>`}</div>
-    <div class="notice" style="margin-top:16px">${icon("alert")}<span><strong>Antes de producción:</strong> cada persona necesitará una cuenta real protegida y permisos validados por el servidor.</span></div>`;
+    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta autenticada"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>
+    <div class="notice" style="margin-top:16px">${icon("alert")}<span>Los permisos también se validan en Supabase. Las invitaciones dependen de que el correo saliente del proyecto esté configurado.</span></div>`;
 }
 
 function renderSettings() {
-  if (!hasActiveRole("owner")) return `${pageHeading("AJUSTES", "Acceso restringido", "Solo el dueño puede modificar las preferencias del proyecto.")}`;
-  const methods = ["Efectivo", "QR"];
-  return `${pageHeading("PREFERENCIAS DEL LOCAL", "Ajustes", "Define los datos de ejemplo para adaptar la prueba a tu pizzería.", "")}
-    <div class="two-column">
-      <section class="card panel"><div class="panel-title"><h2>Negocio y caja</h2></div>
-        <form id="settings-form" data-form="settings" class="form-stack">
-          <div class="form-field"><label for="business-name">Nombre del local</label><input id="business-name" class="form-control" name="businessName" maxlength="60" required value="${esc(state.settings.businessName)}"></div>
-          <div class="form-grid"><div class="form-field"><label for="currency">Moneda</label><select id="currency" name="currency" class="form-select" required>${["USD", "EUR", "MXN", "COP", "ARS", "CLP", "PEN", "CRC", "UYU", "GTQ"].map((currency) => `<option value="${currency}" ${state.settings.currency === currency ? "selected" : ""}>${currency}</option>`).join("")}</select><span class="field-hint">Solo cambia cómo se muestran los importes; revisa y actualiza cada precio del menú.</span></div>
-          <div class="form-field"><label for="delivery-fee">Costo de envío</label><input id="delivery-fee" class="form-control" type="number" min="0" step="0.01" name="deliveryFee" required value="${Number(state.settings.deliveryFee || 0)}"></div></div>
-          <div class="form-field"><label>Medios de pago disponibles</label><div class="method-grid">${methods.map((method) => `<label class="method-check"><input type="checkbox" name="paymentMethods" value="${method}" ${state.settings.paymentMethods.includes(method) ? "checked" : ""}>${method}</label>`).join("")}</div><span class="field-hint">Selecciona al menos uno. La aplicación no procesa pagos reales.</span></div>
-          <div class="form-field"><label for="extras-list">Extras de pizza</label><textarea id="extras-list" class="form-textarea" name="extrasText" maxlength="500" placeholder="Mozzarella extra | 1.50&#10;Aceitunas | 0.75">${state.settings.extras.map((extra) => `${esc(extra.name)} | ${extra.price}`).join("\n")}</textarea><span class="field-hint">Una línea por extra, con el formato Nombre | precio. Usa precios positivos y la moneda elegida arriba.</span></div>
-          <div class="form-footer"><button class="button primary" type="submit">Guardar ajustes</button></div>
-        </form>
-      </section>
-      <section class="card panel"><div class="panel-title"><h2>Tus datos locales</h2></div>
-        <div class="notice">${icon("alert")}<span>Los pedidos, clientes de prueba, perfiles y cierres quedan en este navegador. Si limpias el almacenamiento del sitio, puedes perderlos.</span></div>
-        <p class="small muted" style="line-height:1.7">Exporta una copia antes de probar. El archivo de respaldo puede contener datos personales: guárdalo solo en un lugar privado y no lo envíes por chat o correo.</p>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:13px">${button("export-data", "Descargar respaldo", { kind: "soft", icon: "download" })}<button class="button" type="button" data-action="import-data-trigger">${icon("upload")}Importar respaldo</button><input id="import-file" class="sr-only" type="file" accept="application/json,.json" aria-label="Seleccionar respaldo de Il Mundo"></div>
-        <div class="divider" style="margin:17px 0"></div>
-        <strong class="small">Disponibilidad sin conexión</strong><p class="small muted" style="line-height:1.6">El menú y esta interfaz pueden abrirse sin internet una vez cargados. Los cambios no se sincronizan con otros dispositivos ni con otros turnos.</p>
-        <div class="divider" style="margin:17px 0"></div>
-        <strong class="small">Borrar los datos de demostración</strong><p class="small muted" style="line-height:1.6">Descarga antes un respaldo. Esta acción eliminará los pedidos, cobros y ajustes guardados en este navegador.</p>
-        <button class="button danger small-button" type="button" style="margin-top:6px" data-action="reset-data">Restaurar datos de ejemplo</button>
-      </section>
-    </div>
-    <div class="section-heading"><h2>Próximas decisiones del plan</h2></div>
-    <section class="card panel"><div class="stat-row"><span>Alcance inicial</span><strong>Un local · celular, mostrador y salón</strong></div><div class="stat-row"><span>Autenticación y sincronización</span><strong>Servidor seguro y usuarios reales</strong></div><div class="stat-row"><span>Venta digital y facturación</span><strong>Fuera de la primera versión</strong></div><div class="stat-row"><span>Costos e inventario avanzado</span><strong>Fases siguientes del plan</strong></div><p class="small muted" style="line-height:1.65;margin:12px 0 0">Esta primera versión es una prueba local de los flujos del MVP. No conecta Supabase, no cuenta con integración de pagos y no sustituye al software de caja en producción.</p></section>`;
+  if (!isAdmin()) return `${pageHeading("CONFIGURACIÓN", "Acceso restringido", "Solo el administrador puede cambiar la configuración.")}`;
+  const tabs = `<div class="settings-tabs" role="tablist" aria-label="Secciones de configuración">
+    <button class="settings-tab ${settingsTab === "menu" ? "selected" : ""}" id="settings-tab-menu" type="button" role="tab" aria-controls="settings-panel-menu" aria-selected="${settingsTab === "menu"}" data-action="settings-tab:menu">Menú</button>
+    <button class="settings-tab ${settingsTab === "users" ? "selected" : ""}" id="settings-tab-users" type="button" role="tab" aria-controls="settings-panel-users" aria-selected="${settingsTab === "users"}" data-action="settings-tab:users">Usuarios y roles</button>
+  </div>`;
+  if (settingsTab === "users") return `${tabs}<div id="settings-panel-users" role="tabpanel" aria-labelledby="settings-tab-users">${renderTeam()}</div>`;
+  const productSection = (category, action, addLabel) => {
+    const products = state.menu.filter((product) => product.category === category);
+    return `<section class="card panel menu-settings-section">
+      <div class="panel-title"><h2>${category}</h2>${button(action, addLabel, { kind: "soft", extra: "small-button", icon: "plus" })}</div>
+      ${products.length ? `<ul class="menu-settings-list">${products.map((product) => `<li class="menu-settings-row"><div class="menu-settings-product"><strong>${esc(product.name)}</strong><span>${pricePills(product)}</span></div><div class="product-admin-actions">${button(`edit-product:${product.id}`, "Editar", { extra: "small-button" })}${button(`delete-product:${product.id}`, "Borrar", { kind: "danger", extra: "small-button" })}</div></li>`).join("")}</ul>` : `<p class="small muted">Todavía no hay ${category.toLowerCase()}.</p>`}
+    </section>`;
+  };
+  return `${tabs}<div id="settings-panel-menu" role="tabpanel" aria-labelledby="settings-tab-menu"><div class="page-heading"><div><h1>Menú</h1></div></div>
+    ${productSection("Pizzas", "add-pizza", "Agregar pizza")}
+    ${productSection("Bebidas", "add-drink", "Agregar bebida")}
+    <div class="section-heading"><h2>Balance</h2></div>
+    <section class="card panel"><p class="small muted">Descarga el balance de ventas registradas hoy.</p>${button("export-daily-balance", "Exportar balance del día", { kind: "primary", icon: "download" })}</section></div>`;
 }
 
 function orderCartTotal() {
@@ -503,7 +556,6 @@ function selectableVariants(product) {
   if (product.category === "Pizzas") {
     return product.variants.filter((variant) => ["Mediana", "Grande"].includes(variant.name));
   }
-  if (product.category === "Bebidas") return product.variants.slice(0, 1);
   return product.variants;
 }
 
@@ -522,7 +574,7 @@ function menuChoiceDialog() {
   const variant = variants.find((item) => item.name === draft.selectedVariants[product.id]) || defaultOrderVariant(product);
   const selected = variant?.name;
   const isDrink = product.category === "Bebidas";
-  const variantOptions = isDrink
+  const variantOptions = isDrink && variants.length <= 1
     ? `<div class="unit-choice">${formatMoney(variant?.price, state.settings.currency)} <span>por unidad</span></div>`
     : variants.length
       ? `<div class="menu-variants" aria-label="${product.category === "Pizzas" ? "Tamaño" : "Presentación"} de ${esc(product.name)}">${variants.map((option) => `<button type="button" class="menu-variant ${option.name === selected ? "selected" : ""}" data-action="select-variant:${encodeURIComponent(product.id)}:${encodeURIComponent(option.name)}" aria-pressed="${option.name === selected}"><span>${esc(option.name)}</span><strong>${formatMoney(option.price, state.settings.currency)}</strong></button>`).join("")}</div>`
@@ -545,11 +597,11 @@ function menuChoiceDialog() {
 }
 
 function orderFormMenu() {
-  const productsByCategory = ["Pizzas", "Bebidas"].map((category) => ({
+  const categories = state.settings.menuCategories || [...new Set(state.menu.map((product) => product.category))];
+  const productsByCategory = categories.map((category) => ({
     category,
     products: state.menu.filter((product) => product.active && product.category === category),
   }));
-  const activeTables = new Map(occupiedTables().map((table) => [table.id, table]));
   const paymentMethods = state.settings.paymentMethods;
   const channelOptions = [
     ["dinein", "En mesa", "table"],
@@ -575,7 +627,7 @@ function orderFormMenu() {
   return `<form id="new-order-form" class="new-order-form" data-form="new-order">
     <div class="wizard-section"><h3 class="wizard-section-title">Tipo de pedido</h3><div class="channel-select">${channelOptions.map(([value, label, iconName]) => `<span class="channel-option"><input type="radio" id="channel-${value}" name="channel" data-focus="channel-${value}" value="${value}" ${draft.channel === value ? "checked" : ""}><label for="channel-${value}">${icon(iconName)}${esc(label)}</label></span>`).join("")}</div></div>
     <div class="form-grid wizard-section">
-      ${draft.channel === "dinein" ? `<div class="form-field"><label for="order-table">Mesa</label><select id="order-table" class="form-select" name="tableId" data-focus="order-table" required><option value="">Selecciona una mesa</option>${state.tables.map((table) => `<option value="${esc(table.id)}" ${table.id === draft.tableId ? "selected" : ""} ${activeTables.has(table.id) && table.id !== draft.tableId ? "disabled" : ""}>${esc(table.name)} · ${table.seats} asientos${activeTables.has(table.id) && table.id !== draft.tableId ? " · ocupada" : ""}</option>`).join("")}</select></div>` : `<div class="form-field"><label for="order-customer">Nombre del pedido</label><input id="order-customer" class="form-control" name="customerName" maxlength="70" required placeholder="Ej.: Andrea" value="${esc(draft.customerName)}"></div>`}
+      ${draft.channel === "dinein" ? `<div class="form-field"><p class="field-hint">Pedido para consumir en el salón.</p></div>` : `<div class="form-field"><label for="order-customer">Nombre del pedido</label><input id="order-customer" class="form-control" name="customerName" maxlength="70" required placeholder="Ej.: Andrea" value="${esc(draft.customerName)}"></div>`}
       ${draft.channel === "pickup" ? `<div class="form-field wide"><label for="order-notes">Nota para cocina (opcional)</label><input id="order-notes" class="form-control" name="notes" maxlength="200" placeholder="Por ejemplo: sin cebolla" value="${esc(draft.notes)}"></div>` : ""}
     </div>
     <div class="wizard-section">
@@ -586,23 +638,24 @@ function orderFormMenu() {
       <div class="cart-lines">${cartHtml}</div>
       <div class="cart-total"><span>Total estimado</span><span>${formatMoney(orderCartTotal(), state.settings.currency)}</span></div>
     </section>
-    ${paymentMethods.length ? `<fieldset class="payment-method-field wizard-section"><legend>Medio de pago previsto</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago previsto">${paymentMethods.map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="order-payment-${index}" name="paymentMethod" value="${esc(method)}" ${method === draft.paymentMethod ? "checked" : ""} required><label for="order-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div><span class="field-hint">El cobro se registra cuando se marque el pedido como pagado.</span></fieldset>` : `<div class="notice danger-note wizard-section">${icon("alert")}<span>Activa al menos un medio de pago en Ajustes para enviar este pedido.</span></div>`}
-    ${!activeCashSession(state) ? `<div class="notice wizard-section">${icon("alert")}<span>Puedes guardar el pedido, pero tendrás que abrir Caja antes de registrar el cobro.</span></div>` : ""}
+    ${paymentMethods.length ? `<fieldset class="payment-method-field wizard-section"><legend>Medio de pago</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago">${paymentMethods.map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="order-payment-${index}" name="paymentMethod" value="${esc(method)}" ${method === draft.paymentMethod ? "checked" : ""} required><label for="order-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div><span class="field-hint">Recibe el pago antes de enviar el pedido a cocina.</span></fieldset>` : `<div class="notice danger-note wizard-section">${icon("alert")}<span>Activa al menos un medio de pago en Ajustes para enviar este pedido.</span></div>`}
+    ${!activeCashSession(state) ? `<div class="notice wizard-section">${icon("alert")}<span>El pedido se podrá enviar, pero el pago no se asociará a un turno de Caja abierto.</span></div>` : ""}
     <span id="order-form-live" class="sr-only" aria-live="polite"></span>
   </form>`;
 }
 
-function menuEditorForm(product) {
-  const category = product?.category || "Pizzas";
+function menuEditorForm(product, selectedCategory = "Pizzas") {
+  const category = product?.category || selectedCategory;
+  const categories = ["Pizzas", "Bebidas"];
   const variants = category === "Bebidas"
-    ? [{ name: "Unidad", price: product?.variants[0]?.price ?? "" }]
+    ? product?.variants || [{ name: "Unidad", price: "" }]
     : product?.variants || [{ name: "Personal", price: "" }, { name: "Mediana", price: "" }, { name: "Grande", price: "" }];
   return `<form id="product-form" data-form="product">
     <input type="hidden" name="id" value="${esc(product?.id || "")}">
     <div class="form-stack">
       <div class="form-field"><label for="product-name">Nombre del producto</label><input id="product-name" class="form-control" name="name" maxlength="55" required placeholder="Ej.: Pizza napolitana" value="${esc(product?.name || "")}"></div>
-      <div class="form-field"><label for="product-category">Categoría</label><select id="product-category" class="form-select" name="category" required><option value="Pizzas" ${category === "Pizzas" ? "selected" : ""}>Pizzas</option><option value="Bebidas" ${category === "Bebidas" ? "selected" : ""}>Bebidas</option><option value="Postres" ${category === "Postres" ? "selected" : ""}>Postres</option></select></div>
-      <div class="product-variants-grid">${[0, 1, 2].map((index) => `<div class="product-variant-row" data-variant-row="${index}" ${category === "Bebidas" && index > 0 ? "hidden" : ""}><div class="form-field"><label for="variant-name-${index}">${index === 0 ? category === "Bebidas" ? "Presentación" : "Variante principal" : `Variante ${index + 1} (opcional)`}</label><input id="variant-name-${index}" class="form-control" name="variantName${index + 1}" maxlength="30" ${index === 0 ? "required" : ""} ${category === "Bebidas" && index === 0 ? "readonly" : ""} placeholder="${index === 0 ? "Ej.: Personal" : "Ej.: Mediana"}" value="${esc(variants[index]?.name || "")}"></div><div class="form-field"><label for="variant-price-${index}">${index === 0 && category === "Bebidas" ? "Precio por unidad" : `Precio${index === 0 ? " principal" : ` ${index + 1}`}`}</label><input id="variant-price-${index}" class="form-control" name="variantPrice${index + 1}" type="number" min="0.01" step="0.01" ${index === 0 ? "required" : ""} placeholder="0.00" value="${variants[index]?.price ?? ""}"></div></div>`).join("")}</div>
+      <div class="form-field"><label for="product-category">Categoría</label><select id="product-category" class="form-select" name="category" required>${categories.map((item) => `<option value="${esc(item)}" ${category === item ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></div>
+      <div class="product-variants-grid">${[0, 1, 2].map((index) => `<div class="product-variant-row" data-variant-row="${index}"><div class="form-field"><label for="variant-name-${index}">${category === "Bebidas" ? `Presentación${index === 0 ? "" : ` ${index + 1} (opcional)`}` : index === 0 ? "Variante principal" : `Variante ${index + 1} (opcional)`}</label><input id="variant-name-${index}" class="form-control" name="variantName${index + 1}" maxlength="30" ${index === 0 ? "required" : ""} placeholder="${category === "Bebidas" ? index === 0 ? "Ej.: Unidad" : "Ej.: 1,5 L" : index === 0 ? "Ej.: Personal" : "Ej.: Mediana"}" value="${esc(variants[index]?.name || "")}"></div><div class="form-field"><label for="variant-price-${index}">${category === "Bebidas" ? "Precio de presentación" : `Precio${index === 0 ? " principal" : ` ${index + 1}`}`}</label><input id="variant-price-${index}" class="form-control" name="variantPrice${index + 1}" type="number" min="0.01" step="0.01" ${index === 0 ? "required" : ""} placeholder="0.00" value="${variants[index]?.price ?? ""}"></div></div>`).join("")}</div>
       <label class="checkbox-row"><input type="checkbox" name="active" ${product?.active === false ? "" : "checked"}>Disponible para pedidos</label>
     </div>
     <div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Guardar producto</button></div>
@@ -621,7 +674,7 @@ function modalContent(current) {
       };
     case "switch-role":
       return {
-        body: `<p class="small muted" style="line-height:1.6">La identidad y los permisos que aparecen en pantalla son una simulación. No son cuentas de usuario reales.</p><div>${state.team.map((member) => `<button type="button" class="role-card" style="width:100%;text-align:left;cursor:pointer;margin-top:8px" data-action="switch-member:${esc(member.id)}"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${esc(ROLES[member.role])} · perfil de prueba</span></span>${member.id === state.activeMemberId ? badge("Actual", "preparing") : icon("arrow")}</button>`).join("")}</div>`,
+        body: `<p class="small muted" style="line-height:1.6">La identidad y los permisos que aparecen en pantalla son una simulación. No son cuentas de usuario reales.</p><div>${state.team.map((member) => `<button type="button" class="role-card" style="width:100%;text-align:left;cursor:pointer;margin-top:8px" data-action="switch-member:${esc(member.id)}"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${memberRoleLabel(member.role)} · perfil local</span></span>${member.id === state.activeMemberId ? badge("Actual", "preparing") : icon("arrow")}</button>`).join("")}</div>`,
         footer: `<button class="button" type="button" data-action="close-modal">Volver</button>`,
       };
     case "cash-open":
@@ -641,24 +694,15 @@ function modalContent(current) {
         .map(([method, amount]) => `<div class="stat-row"><span>${esc(method)} (anterior)</span><strong>${formatMoney(amount, state.settings.currency)}</strong></div>`)
         .join("");
       return {
-        body: `<form id="close-cash-form" data-form="cash-close"><div class="form-stack"><div class="notice">${icon("alert")}<span>Se registran los cobros completos anotados en esta caja. Cuenta el efectivo real antes de cerrar.</span></div><section class="cash-close-summary"><div class="stat-row total"><span>Total generado</span><strong>${formatMoney(totalGenerated, state.settings.currency)}</strong></div><div class="stat-row"><span>Efectivo</span><strong>${formatMoney(cash, state.settings.currency)}</strong></div><div class="stat-row"><span>QR</span><strong>${formatMoney(qr, state.settings.currency)}</strong></div>${otherTotals}</section><div class="form-field"><label for="counted-amount">Efectivo contado al cierre</label><input id="counted-amount" class="form-control" type="number" name="amount" min="0" step="0.01" required placeholder="0.00"></div><p class="small muted">Efectivo esperado en caja (incluye la apertura): <strong>${formatMoney(expected, state.settings.currency)}</strong> · la diferencia se calculará al guardar.</p><div class="form-field"><label for="close-notes">Observación (opcional)</label><textarea class="form-textarea" id="close-notes" name="notes" maxlength="250" placeholder="Comentario del cierre"></textarea></div></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">${icon("check")}Cerrar turno</button></div></form>`,
-        footer: "",
-      };
-    }
-    case "payment": {
-      const order = state.orders.find((item) => item.id === current.data.orderId);
-      if (!order) return { body: emptyState("No encontramos la comanda", "Vuelve a cargar los pedidos."), footer: "" };
-      const methods = ["Efectivo", "QR"].filter((method) => state.settings.paymentMethods.includes(method));
-      return {
-        body: `<form id="payment-form" data-form="payment"><input type="hidden" name="orderId" value="${esc(order.id)}"><div class="form-stack"><div class="cash-status"><div class="cash-status-details"><span class="cash-status-icon">${icon("receipt")}</span><div><strong>${esc(orderDisplayId(order))} · ${esc(order.customerName || channelLabel(order.channel))}</strong><p>${esc(getOrderItemSummary(order))}</p></div></div><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></div>${activeCashSession(state) ? "" : `<div class="notice danger-note">${icon("alert")}<span>No hay una caja abierta. Abre Caja para registrar este cobro.</span></div>`}${methods.length ? `<div class="form-field"><label for="payment-method">Medio de pago</label><select id="payment-method" name="method" class="form-select" required>${methods.map((method) => `<option value="${esc(method)}" ${method === order.paymentMethod ? "selected" : ""}>${esc(method)}</option>`).join("")}</select></div>` : `<div class="notice danger-note">${icon("alert")}<span>Habilita Efectivo o QR en Ajustes para registrar el pago.</span></div>`}</div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" ${activeCashSession(state) && methods.length ? "" : "disabled"}>Registrar ${formatMoney(orderTotal(order), state.settings.currency)}</button></div></form>`,
+        body: `<form id="close-cash-form" data-form="cash-close"><div class="form-stack"><div class="notice">${icon("alert")}<span>Se incluyen los pagos de los pedidos confirmados durante este turno. Cuenta el efectivo real antes de cerrar.</span></div><section class="cash-close-summary"><div class="stat-row total"><span>Total generado</span><strong>${formatMoney(totalGenerated, state.settings.currency)}</strong></div><div class="stat-row"><span>Efectivo</span><strong>${formatMoney(cash, state.settings.currency)}</strong></div><div class="stat-row"><span>QR</span><strong>${formatMoney(qr, state.settings.currency)}</strong></div>${otherTotals}</section><div class="form-field"><label for="counted-amount">Efectivo contado al cierre</label><input id="counted-amount" class="form-control" type="number" name="amount" min="0" step="0.01" required placeholder="0.00"></div><p class="small muted">Efectivo esperado en caja (incluye la apertura): <strong>${formatMoney(expected, state.settings.currency)}</strong> · la diferencia se calculará al guardar.</p><div class="form-field"><label for="close-notes">Observación (opcional)</label><textarea class="form-textarea" id="close-notes" name="notes" maxlength="250" placeholder="Comentario del cierre"></textarea></div></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">${icon("check")}Cerrar turno</button></div></form>`,
         footer: "",
       };
     }
     case "product-edit":
-      return { body: menuEditorForm(current.data.product), footer: "" };
+      return { body: menuEditorForm(current.data.product, current.data.category), footer: "" };
     case "team-add":
       return {
-        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre para mostrar en la demostración</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-role">Rol simulado</label><select class="form-select" id="member-role" name="role" required>${Object.entries(ROLES).map(([id, label]) => `<option value="${id}">${esc(label)}</option>`).join("")}</select></div><p class="small muted">Esto agrega un perfil de muestra para probar pantallas. No crea un inicio de sesión ni controla dispositivos distintos.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Agregar perfil</button></div></form>`,
+        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="worker">Trabajador</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario define su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
         footer: "",
       };
     case "assign-delivery":
@@ -684,15 +728,13 @@ function openModal(kind, options = {}) {
       "switch-role": "Vista previa de un perfil",
       "cash-open": "Abrir caja",
       "cash-close": "Cerrar caja",
-      payment: "Registrar un pago",
       "assign-delivery": "Asignar repartidor",
       "product-edit": options.product ? "Editar producto" : "Agregar producto",
-      "team-add": "Agregar un perfil de prueba",
+      "team-add": "Agregar una cuenta",
       confirm: options.title || "Confirmar acción",
     }[kind] || "Detalle"),
     description: options.description || ({
       "new-order": "Elige los productos y sus detalles. El pedido quedará guardado en este dispositivo.",
-      payment: "Anota el pago recibido en esta caja abierta.",
       "product-edit": "Los nombres y precios que aparecen aquí son ejemplos.",
     }[kind] || ""),
     data: options,
@@ -707,7 +749,7 @@ function openModal(kind, options = {}) {
 }
 
 function startNewOrder(options = {}) {
-  if (!hasActiveRole("owner", "cashier", "waiter")) {
+  if (!isAdmin() && !state.team.some((member) => member.id === state.activeMemberId && member.role !== "owner")) {
     notify("Este perfil no puede crear pedidos.", "error");
     return;
   }
@@ -752,7 +794,8 @@ function simplifyDineInDraft() {
   draft.notes = "";
   draft.selectedExtras = {};
   draft.itemNotes = {};
-  draft.category = ["all", "Pizzas", "Bebidas"].includes(draft.category) ? draft.category : "all";
+  const categories = state.settings.menuCategories || ["Pizzas", "Bebidas"];
+  draft.category = ["all", ...categories].includes(draft.category) ? draft.category : "all";
   draft.items = draft.items.map((item) => {
     const extrasPrice = (item.extras || []).reduce((sum, name) => {
       const extra = state.settings.extras.find((candidate) => candidate.name === name);
@@ -773,8 +816,8 @@ function createOrder() {
     notify("Elige un medio de pago disponible en Ajustes.", "error");
     return;
   }
-  if (draft.channel === "dinein" && (!draft.tableId || !state.tables.some((table) => table.id === draft.tableId))) {
-    notify("Elige una mesa disponible para este pedido.", "error");
+  if (draft.tableId && !state.tables.some((table) => table.id === draft.tableId)) {
+    notify("La mesa seleccionada ya no está disponible.", "error");
     return;
   }
   if (draft.channel === "pickup" && !draft.customerName.trim()) {
@@ -800,12 +843,14 @@ function createOrder() {
     items: draft.items,
     status: "new",
     createdAt: new Date().toISOString(),
-    createdBy: state.activeMemberId,
+    createdBy: authenticatedUser?.id || state.activeMemberId,
     deliveryPersonId: "",
-    payment: null,
+    payment: { method: draft.paymentMethod, amount: orderTotal({ items: draft.items, channel: draft.channel, deliveryFee: 0 }), paidAt: new Date().toISOString() },
   };
   const stored = persist((next) => {
     next.orders.push(order);
+    const session = next.cashSessions.find((item) => !item.closedAt);
+    if (session) session.transactions.push({ orderId: order.id, ...order.payment });
   });
   if (!stored) return;
   modal = null;
@@ -814,7 +859,7 @@ function createOrder() {
   render();
   playNotification();
   publishNotification(order);
-  notify(`Pedido ${orderDisplayId(order)} enviado a la comanda.`, "success");
+  notify(`Pedido ${orderDisplayId(order)} confirmado y pago registrado.`, "success");
 }
 
 function initialiseAudio() {
@@ -827,7 +872,7 @@ function initialiseAudio() {
 }
 
 function playNotification() {
-  if (state?.settings?.soundEnabled === false || !audioContext) return;
+  if (!soundEnabledOnDevice || !audioContext) return;
   try {
     if (audioContext.state === "suspended") {
       audioContext.resume().then(playNotification).catch((error) => {
@@ -857,8 +902,44 @@ function playNotification() {
   }
 }
 
+function playReadyNotification() {
+  if (!soundEnabledOnDevice || !audioContext) return;
+  try {
+    if (audioContext.state === "suspended") {
+      audioContext.resume().then(playReadyNotification).catch((error) => {
+        console.error("No se pudo reanudar el aviso sonoro de pedido listo.", error);
+        notify("El navegador bloqueó el sonido del pedido listo.", "warning");
+      });
+      return;
+    }
+    const startAt = audioContext.currentTime;
+    [587.33, 783.99, 1046.5].forEach((frequency, index) => {
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const noteStart = startAt + index * 0.13;
+      oscillator.type = "sine";
+      oscillator.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.0001, noteStart);
+      gain.gain.exponentialRampToValueAtTime(0.08, noteStart + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.3);
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.start(noteStart);
+      oscillator.stop(noteStart + 0.31);
+    });
+  } catch (error) {
+    console.error("No se pudo reproducir el aviso de pedido listo.", error);
+    notify("No se pudo reproducir el sonido de pedido listo en este dispositivo.", "warning");
+  }
+}
+
+function notifyOrderReady(order) {
+  playReadyNotification();
+  notify(`Pedido listo · ${orderDisplayId(order)} · ${channelLabel(order.channel)}`, "ready", 8000);
+}
+
 function publishNotification(order) {
-  if (!state.settings.notificationsEnabled || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
+  if (!notificationsEnabledOnDevice || !("Notification" in window) || Notification.permission !== "granted" || !document.hidden) return;
   new Notification(`${state.settings.businessName}: pedido ${orderDisplayId(order)}`, {
     body: `${channelLabel(order.channel)} · ${getOrderItemSummary(order)}`,
     icon: "./assets/pizza.svg",
@@ -868,15 +949,14 @@ function publishNotification(order) {
 function updateOrderStatus(orderId, status) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return notify("La comanda ya no está disponible.", "error");
-  const role = state.activeRole;
   const authorized = status === "preparing"
-    ? hasActiveRole("owner", "cashier", "kitchen") && order.status === "new"
+    ? order.status === "new"
     : status === "ready"
-      ? hasActiveRole("owner", "cashier", "kitchen") && order.status === "preparing"
+      ? ["new", "preparing"].includes(order.status)
       : status === "delivered"
         ? order.status === "ready" && (order.channel === "delivery"
-          ? (role === "owner" || role === "cashier" || (role === "delivery" && order.deliveryPersonId === state.activeMemberId))
-          : hasActiveRole("owner", "cashier", "waiter"))
+          ? (isAdmin() || (order.deliveryPersonId === state.activeMemberId))
+          : true)
         : false;
   if (!authorized) {
     notify("Este perfil no puede cambiar ese estado.", "error");
@@ -886,59 +966,16 @@ function updateOrderStatus(orderId, status) {
     const target = next.orders.find((item) => item.id === orderId);
     target.status = status;
     target.updatedAt = new Date().toISOString();
-  }, `Comanda ${orderDisplayId(order)}: ${statusMeta(status)[0].toLowerCase()}.`)) {
-    modal = null;
-  }
-}
-
-function completeKitchenOrder(orderId) {
-  if (!hasActiveRole("owner", "cashier", "kitchen")) {
-    return notify("Este perfil no puede completar comandas desde Cocina.", "error");
-  }
-  const order = state.orders.find((item) => item.id === orderId);
-  if (!order || order.status === "delivered") {
-    return notify("Esta comanda ya fue completada o dejó de estar disponible.", "warning");
-  }
-  const completedAt = new Date().toISOString();
-  if (persist((next) => {
-    const target = next.orders.find((item) => item.id === orderId);
-    if (!target || target.status === "delivered") {
-      throw new Error("La comanda ya fue completada en otra pestaña.");
-    }
-    target.status = "delivered";
-    target.completedAt = completedAt;
-    target.updatedAt = completedAt;
-  }, `Pedido ${orderDisplayId(order)} completado y conservado en Caja.`)) {
+  }, status === "ready" ? undefined : `Comanda ${orderDisplayId(order)}: ${statusMeta(status)[0].toLowerCase()}.`)) {
     modal = null;
     render();
-  }
-}
-
-function recordPayment(orderId, method) {
-  const order = state.orders.find((item) => item.id === orderId);
-  const session = activeCashSession(state);
-  if (!hasActiveRole("owner", "cashier")) return notify("Solo el dueño o el cajero pueden anotar pagos.", "error");
-  if (!order || order.payment?.paidAt) return notify("Esta comanda ya se cobró o dejó de estar disponible.", "warning");
-  if (!session) return notify("Abre la caja antes de registrar el pago.", "error");
-  if (!["Efectivo", "QR"].includes(method) || !state.settings.paymentMethods.includes(method)) return notify("Selecciona Efectivo o QR entre los medios habilitados.", "error");
-  if (!["ready", "delivered"].includes(order.status)) return notify("El cobro se registra cuando el pedido está listo para entregar.", "warning");
-  const payment = { method, amount: orderTotal(order), paidAt: new Date().toISOString() };
-  if (persist((next) => {
-    const targetSession = next.cashSessions.find((item) => item.id === session.id);
-    const targetOrder = next.orders.find((item) => item.id === orderId);
-    if (!targetSession || targetSession.closedAt || !targetOrder || targetOrder.payment?.paidAt) {
-      throw new Error("El turno se cerró o el pedido ya se cobró. Actualiza la pantalla e inténtalo de nuevo.");
-    }
-    targetSession.transactions.push({ orderId, ...payment });
-    targetOrder.payment = payment;
-  }, "Pago registrado en esta caja.")) {
-    closeModal();
+    if (status === "ready") notifyOrderReady(order);
   }
 }
 
 function commitCloseCash(amount, notes) {
   const session = activeCashSession(state);
-  if (!hasActiveRole("owner", "cashier") || !session) return notify("No hay una caja abierta para cerrar.", "error");
+  if (!isAdmin() || !session) return notify("Solo el administrador puede cerrar la caja.", "error");
   if (!Number.isFinite(amount) || amount < 0) return notify("Ingresa un monto de efectivo contado válido.", "error");
   if (persist((next) => {
     const target = next.cashSessions.find((item) => item.id === session.id);
@@ -950,8 +987,9 @@ function commitCloseCash(amount, notes) {
     target.cashSales = totals.Efectivo || 0;
     target.qrSales = totals.QR || 0;
     target.closedAt = new Date().toISOString();
-  }, "Cierre anotado. Guarda un respaldo en Ajustes.")) {
+  }, "Caja cerrada. Descargando el balance de Excel.")) {
     closeModal();
+    exportCashExcel();
   }
 }
 
@@ -959,24 +997,18 @@ function addMenuProduct(formData) {
   const id = String(formData.get("id") || "");
   const name = String(formData.get("name") || "").trim();
   const category = String(formData.get("category") || "");
-  if (!name || !["Pizzas", "Bebidas", "Postres"].includes(category)) {
+  if (!name || !["Pizzas", "Bebidas"].includes(category)) {
     notify("Completa el nombre y una categoría válida.", "warning");
     return;
   }
   const variants = [];
-  if (category === "Bebidas") {
-    const price = Number(formData.get("variantPrice1"));
-    if (!Number.isFinite(price) || price <= 0) return notify("Ingresa un precio por unidad válido.", "warning");
-    variants.push({ name: "Unidad", price });
-  } else {
-    for (const index of [1, 2, 3]) {
-      const variantName = String(formData.get(`variantName${index}`) || "").trim();
-      const rawPrice = formData.get(`variantPrice${index}`);
-      if (!variantName && !rawPrice) continue;
-      const price = Number(rawPrice);
-      if (!variantName || !Number.isFinite(price) || price <= 0) return notify(`Completa correctamente el nombre y el precio de la variante ${index}.`, "warning");
-      variants.push({ name: variantName, price });
-    }
+  for (const index of [1, 2, 3]) {
+    const variantName = String(formData.get(`variantName${index}`) || "").trim();
+    const rawPrice = formData.get(`variantPrice${index}`);
+    if (!variantName && !rawPrice) continue;
+    const price = Number(rawPrice);
+    if (!variantName || !Number.isFinite(price) || price <= 0) return notify(`Completa correctamente el nombre y el precio de la presentación ${index}.`, "warning");
+    variants.push({ name: variantName, price });
   }
   if (!variants.length) return notify("Agrega al menos una variante con un precio válido.", "warning");
   const active = formData.get("active") === "on";
@@ -1002,6 +1034,14 @@ function handleNewOrder(event) {
 
 function handleChange(event) {
   const target = event.target;
+  if (target.matches("[data-member-role]")) {
+    if (!isAdmin()) return notify("Solo el administrador puede modificar cuentas.", "error");
+    const memberId = target.dataset.memberRole;
+    const member = state.team.find((person) => person.id === memberId);
+    if (!member || !["admin", "worker"].includes(target.value) || memberId === state.activeMemberId) return notify("No se puede modificar esa cuenta.", "warning");
+    void changeStaffRole(member, target.value, target);
+    return;
+  }
   if (target.matches("[data-order-extra]")) {
     if (!draft) return;
     const id = target.dataset.orderExtra;
@@ -1036,20 +1076,15 @@ function handleChange(event) {
     const chosen = form?.elements.category?.value;
     if (!form) return;
     const isDrink = chosen === "Bebidas";
-    form.querySelectorAll("[data-variant-row]").forEach((row) => {
-      row.hidden = isDrink && row.dataset.variantRow !== "0";
-    });
-    form.elements.variantName1.readOnly = isDrink;
-    form.elements.variantName1.value = isDrink
-      ? "Unidad"
-      : form.elements.variantName1.value === "Unidad"
-        ? chosen === "Pizzas" ? "Personal" : "Principal"
-        : form.elements.variantName1.value;
+    if (isDrink && ["", "Personal"].includes(form.elements.variantName1.value)) form.elements.variantName1.value = "Unidad";
+    if (!isDrink && form.elements.variantName1.value === "Unidad") form.elements.variantName1.value = "Personal";
     form.querySelector('label[for="variant-name-0"]').textContent = isDrink ? "Presentación" : "Variante principal";
-    form.querySelector('label[for="variant-price-0"]').textContent = isDrink ? "Precio por unidad" : "Precio principal";
-    form.elements.variantName1.placeholder = chosen === "Pizzas" ? "Ej.: Personal" : "Ej.: Principal";
-    form.elements.variantName2.placeholder = "Ej.: Mediana";
-    form.elements.variantName3.placeholder = "Ej.: Grande";
+    form.querySelector('label[for="variant-price-0"]').textContent = isDrink ? "Precio de presentación" : "Precio principal";
+    form.elements.variantName1.placeholder = isDrink ? "Ej.: Unidad" : "Ej.: Personal";
+    form.elements.variantName2.placeholder = isDrink ? "Ej.: 1,5 L" : "Ej.: Mediana";
+    form.elements.variantName3.placeholder = isDrink ? "Ej.: Familiar" : "Ej.: Grande";
+    form.querySelector('label[for="variant-name-1"]').textContent = isDrink ? "Presentación 2 (opcional)" : "Variante 2 (opcional)";
+    form.querySelector('label[for="variant-name-2"]').textContent = isDrink ? "Presentación 3 (opcional)" : "Variante 3 (opcional)";
   }
 }
 
@@ -1098,9 +1133,46 @@ function renderModal() {
   }
 }
 
-function submitForm(event) {
+async function submitForm(event) {
   const form = event.target;
   const data = new FormData(form);
+  if (form.dataset.form === "login") {
+    event.preventDefault();
+    if (!form.reportValidity() || loginBusy) return;
+    loginBusy = true;
+    loginMessage = "";
+    renderLogin();
+    try {
+      const user = await signIn(String(data.get("email") || "").trim(), String(data.get("password") || ""));
+      await startAuthenticatedApp(user);
+    } catch (error) {
+      console.error("No se pudo iniciar sesión.", error);
+      loginMessage = error.message || "No se pudo iniciar sesión.";
+    } finally {
+      loginBusy = false;
+      if (!state) renderLogin();
+    }
+    return;
+  }
+  if (form.dataset.form === "password-update") {
+    event.preventDefault();
+    if (!form.reportValidity() || loginBusy) return;
+    loginBusy = true;
+    try {
+      await updatePassword(String(data.get("password") || ""));
+      passwordRecovery = false;
+      loginMessage = "Contraseña actualizada.";
+      const { data: userData } = await supabase.auth.getUser();
+      if (userData.user) await startAuthenticatedApp(userData.user);
+    } catch (error) {
+      console.error("No se pudo actualizar la contraseña.", error);
+      loginMessage = error.message || "No se pudo actualizar la contraseña.";
+    } finally {
+      loginBusy = false;
+      if (!state) renderLogin();
+    }
+    return;
+  }
   if (form.id === "new-order-form") {
     event.preventDefault();
     handleNewOrder(event);
@@ -1122,18 +1194,23 @@ function submitForm(event) {
     case "cash-close":
       commitCloseCash(Number(data.get("amount")), String(data.get("notes") || "").trim());
       break;
-    case "payment":
-      recordPayment(String(data.get("orderId")), String(data.get("method")));
-      break;
     case "product":
       addMenuProduct(data);
       break;
     case "member": {
       const name = String(data.get("name") || "").trim();
+      const email = String(data.get("email") || "").trim();
       const role = String(data.get("role") || "");
-      if (!name || !Object.hasOwn(ROLES, role)) return notify("Completa un nombre y elige un rol válido.", "warning");
-      if (state.team.some((member) => member.name.toLowerCase() === name.toLowerCase())) return notify("Ya existe un perfil con ese nombre.", "warning");
-      if (persist((next) => next.team.push({ id: localId("staff"), name, role }), `Perfil de prueba ${name} agregado.`)) closeModal();
+      if (!name || !email || !["admin", "worker"].includes(role)) return notify("Completa el nombre, correo y tipo de cuenta.", "warning");
+      try {
+        await inviteOrManageStaff("invite", { name, email, role });
+        closeModal();
+        notify(`Invitación enviada a ${email}.`);
+        await refreshCurrentWorkspace();
+      } catch (error) {
+        console.error("No se pudo enviar la invitación.", error);
+        notify(`No se pudo enviar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
+      }
       break;
     }
     case "assign-delivery": {
@@ -1147,10 +1224,16 @@ function submitForm(event) {
       const currency = String(data.get("currency") || "");
       const deliveryFee = Number(data.get("deliveryFee"));
       const paymentMethods = data.getAll("paymentMethods").map(String);
+      const menuCategories = [...new Set(String(data.get("menuCategories") || "").split(/\r?\n/).map((category) => category.trim()).filter(Boolean))];
       const extrasText = String(data.get("extrasText") || "");
       if (!businessName || !["USD", "EUR", "MXN", "COP", "ARS", "CLP", "PEN", "CRC", "UYU", "GTQ"].includes(currency)) return notify("Revisa el nombre del negocio y la moneda.", "warning");
       if (!Number.isFinite(deliveryFee) || deliveryFee < 0) return notify("El costo de envío debe ser un monto mayor o igual a cero.", "warning");
       if (!paymentMethods.length) return notify("Selecciona al menos un medio de pago.", "warning");
+      if (!menuCategories.length) return notify("Agrega al menos una categoría para el menú.", "warning");
+      const categoriesInUse = new Set(state.menu.map((product) => product.category));
+      const removedCategory = [...categoriesInUse].find((category) => !menuCategories.includes(category));
+      if (removedCategory) return notify(`No puedes quitar «${removedCategory}» porque todavía tiene productos.`, "warning");
+      if (!menuCategories.includes("Pizzas") || !menuCategories.includes("Bebidas")) return notify("Las categorías Pizzas y Bebidas son necesarias para aplicar sus opciones especiales.", "warning");
       const extras = [];
       const extraNames = new Set();
       for (const [index, rawLine] of extrasText.split(/\r?\n/).entries()) {
@@ -1166,7 +1249,7 @@ function submitForm(event) {
         extraNames.add(name.toLowerCase());
         extras.push({ id: localId("extra"), name, price });
       }
-      if (!persist((next) => Object.assign(next.settings, { businessName, currency, deliveryFee, paymentMethods, extras }))) return;
+      if (!persist((next) => Object.assign(next.settings, { businessName, currency, deliveryFee, paymentMethods, menuCategories, extras }))) return;
       return notify("Ajustes guardados.");
     }
     default:
@@ -1176,13 +1259,60 @@ function submitForm(event) {
 }
 
 function switchMember(memberId) {
+  if (memberId === authenticatedUser?.id) return notify("Esta es la cuenta autenticada en este dispositivo.", "status");
+  return notify("Para cambiar de cuenta, cierra la sesión e inicia con otra cuenta.", "warning");
+}
+
+async function refreshCurrentWorkspace() {
+  if (!authenticatedUser || !backendProfile) return;
+  const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
+  backendRevision = latest.revision;
+  state = validateState(latest.state);
+  backendSyncBlocked = false;
+  render();
+}
+
+async function changeStaffRole(member, role, control) {
+  try {
+    await inviteOrManageStaff("role", { userId: member.id, role });
+    notify(`${member.name} ahora tiene acceso de ${role === "admin" ? "administrador" : "trabajador"}.`);
+    await refreshCurrentWorkspace();
+  } catch (error) {
+    console.error("No se pudo cambiar el rol de la cuenta.", error);
+    if (control.isConnected) control.value = memberRoleGroup(member.role);
+    notify(`No se pudo cambiar el rol: ${error.message || "error inesperado"}.`, "error", 6500);
+  }
+}
+
+async function handlePasswordReset() {
+  const email = String(document.querySelector("#login-email")?.value || "").trim();
+  if (!email) {
+    loginMessage = "Escribe tu correo para recibir el enlace de recuperación.";
+    renderLogin();
+    document.querySelector("#login-email")?.focus();
+    return;
+  }
+  try {
+    await requestPasswordReset(email);
+    loginMessage = "Si existe una cuenta con ese correo, recibirás un enlace para restablecer la contraseña.";
+  } catch (error) {
+    console.error("No se pudo solicitar el restablecimiento de contraseña.", error);
+    loginMessage = error.message || "No se pudo solicitar el restablecimiento.";
+  }
+  renderLogin();
+}
+
+async function deleteStaffAccount(memberId) {
   const member = state.team.find((person) => person.id === memberId);
-  if (!member) return notify("El perfil ya no está disponible.", "warning");
-  if (persist((next) => Object.assign(next, { activeRole: member.role, activeMemberId: member.id }))) {
-    modal = null;
-    screen = allowedScreen(screen) ? screen : "home";
-    render();
-    notify(`Vista previa: ${member.name} · ${ROLES[member.role]}.`, "success");
+  if (!member || !isAdmin()) return notify("La cuenta ya no está disponible.", "warning");
+  try {
+    await inviteOrManageStaff("remove", { userId: memberId });
+    closeModal();
+    notify(`Se eliminó la cuenta de ${member.name}.`);
+    await refreshCurrentWorkspace();
+  } catch (error) {
+    console.error("No se pudo eliminar la cuenta.", error);
+    notify(`No se pudo eliminar la cuenta: ${error.message || "error inesperado"}.`, "error", 6500);
   }
 }
 
@@ -1204,8 +1334,8 @@ function exportData() {
 }
 
 function exportCashExcel() {
-  if (!hasActiveRole("owner", "cashier")) {
-    return notify("Solo el dueño y el cajero pueden exportar el balance de caja.", "error");
+  if (!isAdmin()) {
+    return notify("Solo el administrador puede exportar el balance de caja.", "error");
   }
   try {
     const workbook = createCashWorkbook(state);
@@ -1225,13 +1355,52 @@ function exportCashExcel() {
   }
 }
 
+function exportDailyBalance() {
+  if (!isAdmin()) return notify("Solo el administrador puede exportar el balance del día.", "error");
+  try {
+    const dateKey = todayKey();
+    const workbook = createDailyBalanceWorkbook(state, dateKey);
+    const file = new Blob([workbook], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const downloadUrl = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = dailyBalanceWorkbookFilename(dateKey);
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+    notify("El balance de ventas de hoy se descargó en Excel.");
+  } catch (error) {
+    console.error("No se pudo exportar el balance del día.", error);
+    notify(`No se pudo descargar el balance del día: ${error.message || "error inesperado"}.`, "error");
+  }
+}
+
 async function importData(file) {
   if (!file) return;
   try {
     const imported = JSON.parse(await file.text());
     const validated = validateState(imported);
-    const confirmed = window.confirm("Importar este respaldo reemplazará los datos que ya están guardados en este navegador. ¿Quieres continuar?");
+    if (backendProfile && !isAdmin()) return notify("Solo el administrador puede importar un respaldo.", "error");
+    const confirmed = window.confirm("Importar este respaldo reemplazará los datos compartidos en Supabase. Haz una copia antes de continuar. ¿Quieres seguir?");
     if (!confirmed) return;
+    if (backendProfile) {
+      const currentTeam = state.team;
+      const currentRole = state.activeRole;
+      const currentMemberId = state.activeMemberId;
+      if (!persist((next) => {
+        Object.assign(next, validated, {
+          team: currentTeam,
+          activeRole: currentRole,
+          activeMemberId: currentMemberId,
+        });
+      })) return;
+      modal = null;
+      screen = allowedScreen(screen) ? screen : "orders";
+      render();
+      notify("Se importaron los datos al espacio compartido.");
+      return;
+    }
     saveState(validated);
     state = validated;
     modal = null;
@@ -1246,7 +1415,25 @@ async function importData(file) {
 
 function resetDemo() {
   try {
+    if (backendProfile && !isAdmin()) return notify("Solo el administrador puede restaurar los datos de ejemplo.", "error");
     const next = createInitialState();
+    if (backendProfile) {
+      const currentTeam = state.team;
+      const currentRole = state.activeRole;
+      const currentMemberId = state.activeMemberId;
+      if (!persist((shared) => Object.assign(shared, next, {
+        team: currentTeam,
+        activeRole: currentRole,
+        activeMemberId: currentMemberId,
+      }))) return;
+      modal = null;
+      draft = null;
+      screen = "orders";
+      history.replaceState(null, "", "#orders");
+      render();
+      notify("Se restauraron los datos de ejemplo en Supabase.");
+      return;
+    }
     saveState(next);
     state = next;
     modal = null;
@@ -1264,22 +1451,22 @@ function resetDemo() {
 function removeMember(memberId) {
   const member = state.team.find((person) => person.id === memberId);
   if (!member) return notify("El perfil ya no está disponible.", "warning");
-  const protectedIds = ["staff-owner", "staff-cashier", "staff-waiter", "staff-kitchen", "staff-delivery"];
-  if (protectedIds.includes(memberId) || memberId === state.activeMemberId) return notify("No puedes borrar un perfil base o el perfil activo.", "warning");
-  if (state.orders.some((order) => order.createdBy === memberId || order.deliveryPersonId === memberId) ||
-      state.cashSessions.some((cash) => cash.openedBy === memberId)) {
-    return notify("Este perfil aparece en un pedido o en una apertura de caja y no se puede borrar.", "warning");
-  }
+  if (!isAdmin()) return notify("Solo el administrador puede eliminar cuentas.", "error");
+  if (memberId === state.activeMemberId) return notify("No puedes eliminar la cuenta activa.", "warning");
+  if (member.role === "owner" && state.team.filter((person) => person.role === "owner").length <= 1) return notify("Debe quedar al menos una cuenta administradora.", "warning");
   openModal("confirm", {
-    title: "Quitar perfil de prueba",
-    description: `Se quitará el perfil «${member.name}» de esta demostración. No se borrarán los pedidos ni los cierres existentes.`,
-    label: "Quitar perfil",
+    title: "Eliminar cuenta",
+    description: `Se quitará la cuenta «${member.name}». Sus pedidos y movimientos anteriores se conservarán.`,
+    label: "Eliminar cuenta",
     action: `remove-member:${memberId}`,
   });
 }
 
 function render() {
-  if (!state) return;
+  if (!state) {
+    renderLogin();
+    return;
+  }
   if (!allowedScreen(screen)) screen = allowedScreen("orders") ? "orders" : "kitchen";
   const pages = {
     home: renderHome,
@@ -1287,8 +1474,8 @@ function render() {
     kitchen: renderKitchen,
     tables: renderTables,
     cash: () => renderCashPage(state, { badge, button, clockTime, emptyState, esc, formatMoney, hasActiveRole, icon, pageHeading, orderDisplayId }),
-    menu: renderMenu,
-    team: renderTeam,
+    menu: renderSettings,
+    team: renderSettings,
     settings: renderSettings,
   };
   app.innerHTML = frame((pages[screen] || renderHome)());
@@ -1296,13 +1483,95 @@ function render() {
   if (clock) clock.textContent = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(new Date());
 }
 
+function renderLogin() {
+  if (passwordRecovery) {
+    app.innerHTML = `<main class="auth-page"><section class="auth-card">
+      <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+      <h1>Crear contraseña nueva</h1>
+      ${loginMessage ? `<div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(loginMessage)}</span></div>` : ""}
+      <form data-form="password-update"><div class="form-field"><label for="new-password">Nueva contraseña</label><input id="new-password" class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><button class="button primary auth-submit" type="submit" ${loginBusy ? "disabled" : ""}>Guardar contraseña</button></form>
+    </section></main>`;
+    return;
+  }
+  app.innerHTML = `<main class="auth-page"><section class="auth-card">
+    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+    <h1>Iniciar sesión</h1>
+    <p>Accede con la cuenta que te invitó el administrador.</p>
+    ${loginMessage ? `<div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(loginMessage)}</span></div>` : ""}
+    <form data-form="login">
+      <div class="form-field"><label for="login-email">Correo electrónico</label><input id="login-email" class="form-control" name="email" type="email" autocomplete="username" required maxlength="254" placeholder="nombre@correo.com"></div>
+      <div class="form-field"><label for="login-password">Contraseña</label><input id="login-password" class="form-control" name="password" type="password" autocomplete="current-password" required minlength="8" maxlength="128"></div>
+      <button class="button primary auth-submit" type="submit" ${loginBusy ? "disabled" : ""}>${loginBusy ? "Conectando…" : "Entrar"}</button>
+      <button class="auth-link" type="button" data-action="password-reset">Olvidé mi contraseña</button>
+    </form>
+    <p class="small muted">Las cuentas se crean mediante invitación de un administrador.</p>
+    ${authenticatedUser ? `<button class="auth-link" type="button" data-action="sign-out">Cerrar la sesión actual</button>` : ""}
+  </section></main>`;
+}
+
+async function startAuthenticatedApp(user) {
+  if (authenticatedUser?.id === user.id && state) return;
+  if (loadingUserId === user.id) return;
+  loadingUserId = user.id;
+  authenticatedUser = user;
+  state = null;
+  renderLogin();
+  try {
+    const profile = await getWorkspaceProfile(user.id);
+    const workspace = await loadWorkspace(createInitialState(), user.id, profile.role);
+    if (authenticatedUser?.id !== user.id) return;
+    backendProfile = workspace.profile;
+    backendRevision = workspace.revision;
+    state = validateState(workspace.state);
+    loginMessage = "";
+    const requestedScreen = location.hash.slice(1);
+    const defaultMode = requestedScreen === "kitchen" ? "kitchen" : "orders";
+    screen = allowedScreen(defaultMode) ? defaultMode : "orders";
+    if (location.hash !== `#${screen}`) history.replaceState(null, "", `#${screen}`);
+    render();
+    startClock();
+    backendUnsubscribe?.();
+    backendUnsubscribe = subscribeWorkspace(async () => {
+      if (!backendProfile || !authenticatedUser || pendingBackendWrites > 0) return;
+      try {
+        const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
+        if (latest.revision <= backendRevision) return;
+        backendRevision = latest.revision;
+        announceOrdersCreated(validateState(latest.state));
+      } catch (error) {
+        console.error("No se pudo actualizar el espacio compartido.", error);
+        notify(`No se pudo actualizar la información compartida: ${error.message}.`, "error", 6500);
+        if (/rol de la cuenta|perfil/i.test(error.message)) void signOut();
+      }
+    }, (status) => {
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+        console.error("El canal de sincronización de Supabase perdió la conexión.", status);
+        notify("Se perdió la sincronización en tiempo real. Comprueba tu conexión.", "warning", 5000);
+      }
+    });
+  } catch (error) {
+    console.error("No se pudo cargar el espacio de trabajo.", error);
+    backendProfile = null;
+    state = null;
+    loginMessage = error.message || "No se pudo cargar el espacio de trabajo.";
+    renderLogin();
+  } finally {
+    if (loadingUserId === user.id) loadingUserId = "";
+  }
+}
+
 function announceOrdersCreated(nextState) {
   const previousIds = new Set(state.orders.map((order) => order.id));
   const additions = nextState.orders.filter((order) => order.status === "new" && !previousIds.has(order.id));
+  const previousOrders = new Map(state.orders.map((order) => [order.id, order]));
+  const readyOrders = nextState.orders.filter((order) =>
+    order.status === "ready" && previousOrders.has(order.id) && previousOrders.get(order.id).status !== "ready",
+  );
   if (modal?.kind === "new-order") captureDraftForm();
   state = nextState;
   if (!modal) render();
   else renderModal();
+  for (const order of readyOrders) notifyOrderReady(order);
   for (const order of additions) {
     playNotification();
     publishNotification(order);
@@ -1328,6 +1597,8 @@ function navigate(page) {
   }
   modal = null;
   draft = null;
+  if (["settings", "menu"].includes(page)) settingsTab = "menu";
+  if (page === "team") settingsTab = "users";
   screen = page;
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
   render();
@@ -1338,13 +1609,8 @@ function addProductToDraft(productId) {
   captureDraftForm();
   const product = state.menu.find((item) => item.id === productId && item.active);
   if (!product) return notify("Este producto ya no está disponible. Actualiza el menú.", "warning");
-  if (!["Pizzas", "Bebidas"].includes(product.category)) {
-    return notify("En los pedidos solo se pueden agregar pizzas y bebidas.", "warning");
-  }
   const variants = selectableVariants(product);
-  const variantName = product.category === "Bebidas"
-    ? product.variants[0]?.name
-    : draft.selectedVariants[product.id] || defaultOrderVariant(product)?.name;
+  const variantName = draft.selectedVariants[product.id] || defaultOrderVariant(product)?.name;
   const variant = variants.find((item) => item.name === variantName);
   if (!variant) return notify("Elige una presentación disponible.", "warning");
   const extraItems = (draft.channel === "dinein" ? [] : draft.selectedExtras[product.id] || [])
@@ -1381,6 +1647,7 @@ function adjustDraftItem(index, change) {
 }
 
 function assignDelivery(orderId, deliveryPersonId) {
+  if (!isAdmin()) return notify("Solo el administrador puede asignar repartidores.", "error");
   const order = state.orders.find((item) => item.id === orderId);
   const courier = getTeamMember(deliveryPersonId);
   if (!order || order.channel !== "delivery" || order.status === "delivered" || order.deliveryPersonId) {
@@ -1410,6 +1677,21 @@ function actionClicked(action) {
 
   if (name.startsWith("#")) return;
   switch (name) {
+    case "refresh-workspace":
+      refreshCurrentWorkspace().then(() => notify("Datos compartidos actualizados.")).catch((error) => {
+        console.error("No se pudo actualizar el espacio compartido.", error);
+        notify(`No se pudo actualizar: ${error.message || "error inesperado"}.`, "error", 6500);
+      });
+      return;
+    case "sign-out":
+      signOut().catch((error) => {
+        console.error("No se pudo cerrar la sesión.", error);
+        notify(`No se pudo cerrar sesión: ${error.message || "error inesperado"}.`, "error");
+      });
+      return;
+    case "password-reset":
+      void handlePasswordReset();
+      return;
     case "close-modal":
       closeModal();
       return;
@@ -1434,12 +1716,13 @@ function actionClicked(action) {
     case "navigate":
       navigate(value);
       return;
+    case "settings-tab":
+      if (!isAdmin() || !["menu", "users"].includes(value)) return notify("No se pudo abrir esta sección de configuración.", "warning");
+      settingsTab = value;
+      render();
+      return;
     case "view-order":
       navigate("orders");
-      return;
-    case "filter-menu":
-      menuFilter = value;
-      render();
       return;
     case "filter-team":
       teamFilter = value;
@@ -1493,33 +1776,23 @@ function actionClicked(action) {
       adjustDraftItem(Number(value), -1);
       return;
     case "open-cash":
-      if (!hasActiveRole("owner", "cashier")) return notify("Solo el dueño o el cajero pueden abrir la caja.", "error");
+      if (!isAdmin()) return notify("Solo el administrador puede abrir la caja.", "error");
       if (activeCashSession(state)) return notify("La caja ya está abierta.", "warning");
       openModal("cash-open");
       return;
     case "close-cash":
-      if (!hasActiveRole("owner", "cashier")) return notify("Solo el dueño o el cajero pueden cerrar la caja.", "error");
+      if (!isAdmin()) return notify("Solo el administrador puede cerrar la caja.", "error");
       if (!activeCashSession(state)) return notify("No hay una caja abierta.", "warning");
       openModal("cash-close");
       return;
-    case "pay-order": {
-      if (!hasActiveRole("owner", "cashier")) return notify("Solo el dueño y el cajero registran los pagos.", "error");
-      const order = state.orders.find((item) => item.id === value);
-      if (!order || order.payment?.paidAt) return notify("Esta comanda ya se cobró o dejó de estar disponible.", "warning");
-      openModal("payment", { orderId: value });
-      return;
-    }
     case "start-order":
       updateOrderStatus(value, "preparing");
       return;
     case "ready-order":
       updateOrderStatus(value, "ready");
       return;
-    case "deliver-order":
-      updateOrderStatus(value, "delivered");
-      return;
     case "complete-order":
-      completeKitchenOrder(value);
+      updateOrderStatus(value, "ready");
       return;
     case "view-kitchen-order": {
       const order = state.orders.find((item) => item.id === value && item.status !== "delivered");
@@ -1535,8 +1808,9 @@ function actionClicked(action) {
       return;
     }
     case "assign-order": {
+      if (!isAdmin()) return notify("Solo el administrador puede asignar repartidores.", "error");
       const order = state.orders.find((item) => item.id === value);
-      const couriers = state.team.filter((member) => member.role === "delivery");
+      const couriers = state.team.filter((member) => member.role !== "owner");
       if (!order || order.deliveryPersonId || order.status === "delivered") return notify("Este pedido ya fue asignado o completado.", "warning");
       if (!couriers.length) return notify("Agrega un perfil de repartidor en Equipo antes de asignar este pedido.", "warning");
       openModal("assign-delivery", { orderId: value, couriers });
@@ -1544,7 +1818,7 @@ function actionClicked(action) {
     }
     case "take-delivery": {
       const order = state.orders.find((item) => item.id === value);
-      if (state.activeRole !== "delivery" || !order || order.channel !== "delivery" || order.deliveryPersonId || order.status === "delivered") return notify("Este pedido ya fue tomado o no está disponible.", "warning");
+      if (!order || order.channel !== "delivery" || order.deliveryPersonId || order.status === "delivered") return notify("Este pedido ya fue tomado o no está disponible.", "warning");
       if (persist((next) => {
         const target = next.orders.find((item) => item.id === value);
         if (!target || target.deliveryPersonId || target.status === "delivered") throw new Error("El pedido cambió en otra pestaña. Actualiza para ver quién lo tomó.");
@@ -1553,15 +1827,32 @@ function actionClicked(action) {
       return;
     }
     case "edit-product": {
-      if (!hasActiveRole("owner")) return notify("Solo el dueño puede editar el menú.", "error");
+      if (!isAdmin()) return notify("Solo el administrador puede editar el menú.", "error");
       if (value === "new") return openModal("product-edit", { product: null });
       const product = state.menu.find((item) => item.id === value);
       if (!product) return notify("El producto ya no está disponible.", "warning");
       openModal("product-edit", { product });
       return;
     }
+    case "add-pizza":
+    case "add-drink":
+      if (!isAdmin()) return notify("Solo el administrador puede editar el menú.", "error");
+      openModal("product-edit", { product: null, category: name === "add-drink" ? "Bebidas" : "Pizzas" });
+      return;
+    case "delete-product": {
+      if (!isAdmin()) return notify("Solo el administrador puede borrar productos.", "error");
+      const product = state.menu.find((item) => item.id === value);
+      if (!product) return notify("El producto ya no está disponible.", "warning");
+      openModal("confirm", {
+        title: "Borrar producto",
+        description: `Se quitará «${product.name}» del menú. Los pedidos anteriores conservarán el detalle vendido.`,
+        label: "Borrar producto",
+        action: `delete-product:${product.id}`,
+      });
+      return;
+    }
     case "toggle-product": {
-      if (!hasActiveRole("owner")) return notify("Solo el dueño puede cambiar el menú.", "error");
+      if (!isAdmin()) return notify("Solo el administrador puede cambiar el menú.", "error");
       const product = state.menu.find((item) => item.id === value);
       if (!product) return notify("El producto ya no está disponible.", "warning");
       persist((next) => {
@@ -1571,13 +1862,13 @@ function actionClicked(action) {
       return;
     }
     case "switch-role":
-      openModal("switch-role");
+      notify("Para cambiar de cuenta, cierra la sesión e inicia con otra cuenta.", "warning");
       return;
     case "switch-member":
       switchMember(value);
       return;
     case "add-member":
-      if (!hasActiveRole("owner")) return notify("Solo el dueño puede administrar perfiles.", "error");
+      if (!isAdmin()) return notify("Solo el administrador puede administrar cuentas.", "error");
       openModal("team-add");
       return;
     case "remove-member":
@@ -1589,6 +1880,9 @@ function actionClicked(action) {
       return;
     case "export-cash-excel":
       exportCashExcel();
+      return;
+    case "export-daily-balance":
+      exportDailyBalance();
       return;
     case "import-data-trigger":
       document.querySelector("#import-file")?.click();
@@ -1617,20 +1911,25 @@ function actionClicked(action) {
       if (value === "recover-demo") return resetDemo();
       if (value.startsWith("remove-member:")) {
         const memberId = value.slice("remove-member:".length);
-        if (!hasActiveRole("owner")) return notify("Solo el dueño puede quitar perfiles.", "error");
-        const target = state.team.find((member) => member.id === memberId);
-        if (!target) return notify("El perfil ya no está disponible.", "warning");
+        void deleteStaffAccount(memberId);
+      }
+      if (value.startsWith("delete-product:")) {
+        if (!isAdmin()) return notify("Solo el administrador puede borrar productos.", "error");
+        const productId = value.slice("delete-product:".length);
+        const product = state.menu.find((item) => item.id === productId);
+        if (!product) return notify("El producto ya no está disponible.", "warning");
         if (persist((next) => {
-          next.team = next.team.filter((member) => member.id !== memberId);
-        }, `Se quitó el perfil ${target.name}.`)) closeModal();
+          next.menu = next.menu.filter((item) => item.id !== productId);
+        }, `${product.name} se quitó del menú.`)) closeModal();
       }
       return;
     }
     case "enable-sound":
-      if (!hasActiveRole("owner", "cashier", "kitchen")) return notify("Este perfil no tiene acceso a avisos de cocina.", "warning");
+      if (!state.team.some((member) => member.id === state.activeMemberId)) return notify("Selecciona una cuenta válida para habilitar avisos.", "warning");
       try {
         initialiseAudio();
-        if (!persist((next) => { next.settings.soundEnabled = true; })) return;
+        soundEnabledOnDevice = true;
+        localStorage.setItem("ilmundo.sound.enabled", "true");
         notify("Aviso sonoro activado en este dispositivo.");
         playNotification();
       } catch (error) {
@@ -1641,15 +1940,17 @@ function actionClicked(action) {
     case "toggle-alerts": {
       if (!("Notification" in window)) return notify("Este navegador no admite notificaciones en segundo plano.", "warning");
       if (Notification.permission === "granted") {
-        const enabled = !state.settings.notificationsEnabled;
-        if (!persist((next) => { next.settings.notificationsEnabled = enabled; })) return;
+        const enabled = !notificationsEnabledOnDevice;
+        notificationsEnabledOnDevice = enabled;
+        localStorage.setItem("ilmundo.notifications.enabled", String(enabled));
         notify(enabled ? "Avisos del navegador activados." : "Avisos del navegador desactivados.");
       } else if (Notification.permission === "denied") {
         notify("El navegador bloqueó los avisos. Cámbialo en los permisos del sitio.", "warning", 5000);
       } else {
         Notification.requestPermission().then((permission) => {
           if (permission !== "granted") return notify("No se concedió permiso para mostrar avisos.", "warning");
-          if (!persist((next) => { next.settings.notificationsEnabled = true; })) return;
+          notificationsEnabledOnDevice = true;
+          localStorage.setItem("ilmundo.notifications.enabled", "true");
           notify("Avisos del navegador activados.");
         }).catch((error) => {
           console.error("No se pudo solicitar permiso para notificaciones.", error);
@@ -1672,7 +1973,7 @@ function actionClicked(action) {
 function installEventHandlers() {
   let audioUnavailableNotified = false;
   document.addEventListener("pointerdown", () => {
-    if (!state || state.settings.soundEnabled === false || audioContext || audioUnavailableNotified) return;
+    if (!state || !soundEnabledOnDevice || audioContext || audioUnavailableNotified) return;
     try {
       initialiseAudio().catch((error) => {
         audioUnavailableNotified = true;
@@ -1790,23 +2091,42 @@ async function registerServiceWorker() {
 
 function startApp() {
   installEventHandlers();
-  try {
-    state = loadState();
-    if (!state.activeMemberId || !state.team.some((member) => member.id === state.activeMemberId)) {
-      const member = state.team.find((person) => person.role === state.activeRole);
-      state.activeMemberId = member?.id || state.team[0]?.id;
-      saveState(state);
-    }
-    const requestedScreen = location.hash.slice(1);
-    const defaultMode = requestedScreen === "kitchen" ? "kitchen" : "orders";
-    screen = allowedScreen(defaultMode) ? defaultMode : (allowedScreen("orders") ? "orders" : "kitchen");
-    if (location.hash !== `#${screen}`) history.replaceState(null, "", `#${screen}`);
-    render();
-    startClock();
-    registerServiceWorker();
-  } catch (error) {
-    showFatalError(error);
-  }
+  renderLogin();
+  supabase.auth.onAuthStateChange((event, session) => {
+    window.setTimeout(() => {
+      if (event === "PASSWORD_RECOVERY") {
+        passwordRecovery = true;
+        loginMessage = "";
+        renderLogin();
+        return;
+      }
+      if (session?.user) {
+        if (authenticatedUser?.id === session.user.id && state) return;
+        void startAuthenticatedApp(session.user);
+      } else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") {
+        backendUnsubscribe?.();
+        backendUnsubscribe = null;
+        loadingUserId = "";
+        authenticatedUser = null;
+        backendProfile = null;
+        backendRevision = 0;
+        passwordRecovery = false;
+        state = null;
+        modal = null;
+        renderLogin();
+      }
+    }, 0);
+  });
+  supabase.auth.getSession().then(({ data, error }) => {
+    if (error) throw error;
+    if (data.session?.user) void startAuthenticatedApp(data.session.user);
+    else renderLogin();
+  }).catch((error) => {
+    console.error("No se pudo comprobar la sesión de Supabase.", error);
+    loginMessage = `No se pudo comprobar la sesión: ${error.message || "error de conexión"}.`;
+    renderLogin();
+  });
+  registerServiceWorker();
 }
 
 startApp();

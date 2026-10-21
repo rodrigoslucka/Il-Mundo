@@ -1,22 +1,23 @@
 export const STORAGE_KEY = "ilmundo.pizzeria.v1";
 
 export const ROLES = {
-  owner: "Dueño",
+  owner: "Administrador",
   cashier: "Cajero",
   waiter: "Mozo",
   kitchen: "Cocina",
   delivery: "Repartidor",
+  worker: "Trabajador",
 };
 
 export const NAVIGATION = [
-  { id: "home", label: "Resumen", icon: "home", roles: ["owner", "cashier", "waiter", "kitchen", "delivery"] },
-  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "delivery"] },
-  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "cashier", "kitchen"] },
-  { id: "tables", label: "Mesas", icon: "table", roles: ["owner", "cashier", "waiter"] },
-  { id: "cash", label: "Caja", icon: "wallet", roles: ["owner", "cashier"] },
+  { id: "home", label: "Resumen", icon: "home", roles: ["owner"] },
+  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
+  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner"] },
+  { id: "tables", label: "Mesas", icon: "table", roles: ["owner"] },
+  { id: "cash", label: "Caja", icon: "wallet", roles: ["owner"] },
   { id: "menu", label: "Menú", icon: "menu", roles: ["owner"] },
-  { id: "team", label: "Equipo", icon: "users", roles: ["owner"] },
-  { id: "settings", label: "Ajustes", icon: "settings", roles: ["owner"] },
+  { id: "team", label: "Cuentas", icon: "users", roles: ["owner"] },
+  { id: "settings", label: "Configuración", icon: "settings", roles: ["owner"] },
 ];
 
 export function createInitialState() {
@@ -27,6 +28,7 @@ export function createInitialState() {
       currency: "USD",
       paymentMethods: ["Efectivo", "QR"],
       deliveryFee: 2,
+      menuCategories: ["Pizzas", "Bebidas", "Postres"],
       extras: [
         { id: "extra-mozzarella", name: "Mozzarella extra", price: 1.5 },
         { id: "extra-champinones", name: "Champiñones", price: 1 },
@@ -86,6 +88,17 @@ export function validateState(value) {
   ) {
     throw new Error("El archivo no contiene datos de Il Mundo compatibles.");
   }
+  const menuCategories = Array.isArray(value.settings.menuCategories)
+    ? value.settings.menuCategories.filter((category) => typeof category === "string" && category.trim())
+    : [];
+  for (const product of value.menu) {
+    if (typeof product.category === "string" && product.category.trim() && !menuCategories.includes(product.category)) {
+      menuCategories.push(product.category);
+    }
+  }
+  if (!menuCategories.includes("Pizzas")) menuCategories.unshift("Pizzas");
+  if (!menuCategories.includes("Bebidas")) menuCategories.push("Bebidas");
+  value.settings.menuCategories = [...new Set(menuCategories)];
   return value;
 }
 
