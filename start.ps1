@@ -4,7 +4,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$root = [System.IO.Path]::GetFullPath($PSScriptRoot)
+$root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "dist"))
+if (-not [System.IO.File]::Exists((Join-Path $root "index.html"))) {
+  Write-Error "No existe la versión compilada. Ejecuta npm run build antes de iniciar el servidor."
+  exit 1
+}
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add("http://127.0.0.1:$Port/")
 

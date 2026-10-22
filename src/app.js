@@ -1,3 +1,4 @@
+import { installDiagnostics } from "./diagnostics.js";
 import {
   activeCashSession,
   createInitialState,
@@ -27,6 +28,7 @@ import { createPaymentTotals } from "./features/cash/totals.js";
 import { renderCashPage } from "./features/cash/page.js";
 
 const app = document.querySelector("#app");
+installDiagnostics();
 const iconPaths = {
   home: '<path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-7h6v7"/>',
   receipt: '<path d="M4 3h16v18l-4-2-4 2-4-2-4 2z"/><path d="M8 8h8M8 12h8M8 16h4"/>',
@@ -80,7 +82,8 @@ let loadingUserId = "";
 let loginMessage = "";
 let loginBusy = false;
 let passwordRecovery = false;
-let soundEnabledOnDevice = localStorage.getItem("ilmundo.sound.enabled") === "true";
+const SOUND_ENABLED_KEY = "ilmundo.sound.enabled";
+let soundEnabledOnDevice = localStorage.getItem(SOUND_ENABLED_KEY) === "true";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
   { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
@@ -1968,7 +1971,7 @@ function actionClicked(action) {
       if (!state.team.some((member) => member.id === state.activeMemberId)) return notify("Selecciona una cuenta válida para habilitar avisos.", "warning");
       try {
         void initialiseAudio().then(() => {
-          localStorage.setItem("ilmundo.sound.enabled", "true");
+          localStorage.setItem(SOUND_ENABLED_KEY, "true");
           soundEnabledOnDevice = true;
           render();
           notify("Aviso sonoro activado en este dispositivo.");
@@ -1983,7 +1986,7 @@ function actionClicked(action) {
       }
       return;
     case "disable-sound":
-      localStorage.setItem("ilmundo.sound.enabled", "false");
+      localStorage.setItem(SOUND_ENABLED_KEY, "false");
       soundEnabledOnDevice = false;
       render();
       notify("Aviso sonoro desactivado en este dispositivo.");
@@ -2145,7 +2148,11 @@ function startApp() {
   let authInitialized = false;
   let pendingAuthChange = null;
   const applyAuthChange = (event, session) => {
-    if (event === "INITIAL_SESSION") return;
+    if (event === "INITIAL_SESSION") {
+      if (session?.user) void startAuthenticatedApp(session.user);
+      else renderLogin();
+      return;
+    }
     if (event === "PASSWORD_RECOVERY") {
       passwordRecovery = true;
       loginMessage = "";
@@ -2170,37 +2177,19 @@ function startApp() {
   };
   supabase.auth.onAuthStateChange((event, session) => {
     window.setTimeout(() => {
-      if (event === "INITIAL_SESSION") return;
+      if (event === "INITIAL_SESSION") {
+        authInitialized = true;
+        const initialAuthChange = pendingAuthChange || { event, session };
+        pendingAuthChange = null;
+        applyAuthChange(initialAuthChange.event, initialAuthChange.session);
+        return;
+      }
       if (!authInitialized) {
         pendingAuthChange = { event, session };
         return;
       }
       applyAuthChange(event, session);
     }, 0);
-  });
-  supabase.auth.getSession().then(({ data, error }) => {
-    if (error) throw error;
-    authInitialized = true;
-    if (pendingAuthChange) {
-      const { event, session } = pendingAuthChange;
-      pendingAuthChange = null;
-      applyAuthChange(event, session);
-    } else if (data.session?.user) {
-      void startAuthenticatedApp(data.session.user);
-    } else {
-      renderLogin();
-    }
-  }).catch((error) => {
-    authInitialized = true;
-    console.error("No se pudo comprobar la sesión de Supabase.", error);
-    if (pendingAuthChange) {
-      const { event, session } = pendingAuthChange;
-      pendingAuthChange = null;
-      applyAuthChange(event, session);
-    } else {
-      loginMessage = `No se pudo comprobar la sesión: ${error.message || "error de conexión"}.`;
-      renderLogin();
-    }
   });
   registerServiceWorker();
 }

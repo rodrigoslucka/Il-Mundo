@@ -4,3 +4,4 @@ Thumbs.db
 *.backup.json
 .vercel/
 node_modules/
+dist/

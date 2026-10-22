@@ -1,16 +1,7 @@
-const CACHE_NAME = "il-mundo-app-v30";
+const CACHE_NAME = "il-mundo-app-v34";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./src/styles.css?v=23",
-  "./src/diagnostics.js?v=13",
-  "./src/data.js?v=10",
-  "./src/app.js?v=25",
-  "./src/backend.js",
-  "./src/supabase-config.js",
-  "./src/features/cash/export.js",
-  "./src/features/cash/totals.js",
-  "./src/features/cash/page.js",
   "./manifest.webmanifest",
   "./assets/pizza.svg",
   "./assets/pizza-watermark.svg",
