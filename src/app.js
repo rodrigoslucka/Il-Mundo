@@ -101,6 +101,10 @@ function esc(value) {
   })[character]);
 }
 
+function renderLoading(message) {
+  app.innerHTML = `<main class="boot-screen" role="status"><img class="loading-pizza" src="./assets/pizza.svg" alt=""><strong>${esc(message)}</strong></main>`;
+}
+
 function initials(name) {
   return String(name || "?").trim().split(/\s+/).slice(0, 2).map((part) => part[0] || "").join("").toUpperCase();
 }
@@ -555,9 +559,6 @@ function orderCartTotal() {
 }
 
 function selectableVariants(product) {
-  if (product.category === "Pizzas") {
-    return product.variants.filter((variant) => ["Mediana", "Grande"].includes(variant.name));
-  }
   return product.variants;
 }
 
@@ -577,10 +578,10 @@ function menuChoiceDialog() {
   const selected = variant?.name;
   const isDrink = product.category === "Bebidas";
   const variantOptions = isDrink && variants.length <= 1
-    ? `<div class="unit-choice">${formatMoney(variant?.price, state.settings.currency)} <span>por unidad</span></div>`
+    ? `<div class="unit-choice">${esc(variant?.name || "Unidad")} · ${formatMoney(variant?.price, state.settings.currency)} <span>por unidad</span></div>`
     : variants.length
       ? `<div class="menu-variants" aria-label="${product.category === "Pizzas" ? "Tamaño" : "Presentación"} de ${esc(product.name)}">${variants.map((option) => `<button type="button" class="menu-variant ${option.name === selected ? "selected" : ""}" data-action="select-variant:${encodeURIComponent(product.id)}:${encodeURIComponent(option.name)}" aria-pressed="${option.name === selected}"><span>${esc(option.name)}</span><strong>${formatMoney(option.price, state.settings.currency)}</strong></button>`).join("")}</div>`
-      : `<p class="small muted">Este producto no tiene ${product.category === "Pizzas" ? "precio para tamaño mediano o grande" : "una presentación disponible"}. Actualiza sus precios en Menú.</p>`;
+      : `<p class="small muted">Este producto todavía no tiene presentaciones. Actualiza sus precios en Menú.</p>`;
   const extras = draft.channel !== "dinein" && product.category === "Pizzas" && state.settings.extras.length
     ? `<div class="menu-picker-extras"><span>Extras</span>${state.settings.extras.map((extra) => `<label><input type="checkbox" data-order-extra="${esc(product.id)}" data-focus="extra-${esc(product.id)}-${esc(extra.id)}" value="${esc(extra.id)}" ${draft.selectedExtras[product.id]?.includes(extra.id) ? "checked" : ""}>${esc(extra.name)}</label>`).join("")}</div>`
     : "";
@@ -646,6 +647,35 @@ function orderFormMenu() {
   </form>`;
 }
 
+function productVariantRow(category, variant, index) {
+  const isDrink = category === "Bebidas";
+  const label = isDrink
+    ? `Presentación ${index + 1}`
+    : index === 0 ? "Presentación principal" : `Presentación ${index + 1}`;
+  const placeholder = isDrink
+    ? index === 0 ? "Ej.: Unidad" : "Ej.: 1,5 L"
+    : ["Ej.: Personal", "Ej.: Mediana", "Ej.: Grande"][index] || "Ej.: Familiar";
+  return `<div class="product-variant-row" data-variant-row="${index}">
+    <div class="form-field"><label for="variant-name-${index}">${label}</label><input id="variant-name-${index}" class="form-control" name="variantName${index + 1}" maxlength="30" ${index === 0 ? "required" : ""} placeholder="${placeholder}" value="${esc(variant?.name || "")}"></div>
+    <div class="product-variant-price"><div class="form-field"><label for="variant-price-${index}">Precio</label><input id="variant-price-${index}" class="form-control" name="variantPrice${index + 1}" type="number" min="0.01" step="0.01" ${index === 0 ? "required" : ""} placeholder="0.00" value="${variant?.price ?? ""}"></div>
+    <button type="button" class="icon-button variant-remove" data-action="remove-product-variant:${index}" aria-label="Quitar presentación ${index + 1}" title="Quitar presentación">${icon("close")}</button></div>
+  </div>`;
+}
+
+function productVariantsFromForm(form) {
+  return [...form.querySelectorAll("[data-variant-row]")].map((row) => ({
+    name: row.querySelector('input[name^="variantName"]').value,
+    price: row.querySelector('input[name^="variantPrice"]').value,
+  }));
+}
+
+function renderProductVariantRows(form, variants, focusIndex = null) {
+  const category = form.elements.category.value;
+  const container = form.querySelector(".product-variants-grid");
+  container.innerHTML = variants.map((variant, index) => productVariantRow(category, variant, index)).join("");
+  if (focusIndex !== null) container.querySelector(`#variant-name-${focusIndex}`)?.focus();
+}
+
 function menuEditorForm(product, selectedCategory = "Pizzas") {
   const category = product?.category || selectedCategory;
   const categories = ["Pizzas", "Bebidas"];
@@ -657,8 +687,8 @@ function menuEditorForm(product, selectedCategory = "Pizzas") {
     <div class="form-stack">
       <div class="form-field"><label for="product-name">Nombre del producto</label><input id="product-name" class="form-control" name="name" maxlength="55" required placeholder="Ej.: Pizza napolitana" value="${esc(product?.name || "")}"></div>
       <div class="form-field"><label for="product-category">Categoría</label><select id="product-category" class="form-select" name="category" required>${categories.map((item) => `<option value="${esc(item)}" ${category === item ? "selected" : ""}>${esc(item)}</option>`).join("")}</select></div>
-      <div class="product-variants-grid">${[0, 1, 2].map((index) => `<div class="product-variant-row" data-variant-row="${index}"><div class="form-field"><label for="variant-name-${index}">${category === "Bebidas" ? `Presentación${index === 0 ? "" : ` ${index + 1} (opcional)`}` : index === 0 ? "Variante principal" : `Variante ${index + 1} (opcional)`}</label><input id="variant-name-${index}" class="form-control" name="variantName${index + 1}" maxlength="30" ${index === 0 ? "required" : ""} placeholder="${category === "Bebidas" ? index === 0 ? "Ej.: Unidad" : "Ej.: 1,5 L" : index === 0 ? "Ej.: Personal" : "Ej.: Mediana"}" value="${esc(variants[index]?.name || "")}"></div><div class="form-field"><label for="variant-price-${index}">${category === "Bebidas" ? "Precio de presentación" : `Precio${index === 0 ? " principal" : ` ${index + 1}`}`}</label><input id="variant-price-${index}" class="form-control" name="variantPrice${index + 1}" type="number" min="0.01" step="0.01" ${index === 0 ? "required" : ""} placeholder="0.00" value="${variants[index]?.price ?? ""}"></div></div>`).join("")}</div>
-      <label class="checkbox-row"><input type="checkbox" name="active" ${product?.active === false ? "" : "checked"}>Disponible para pedidos</label>
+      <div class="product-variants-grid">${variants.map((variant, index) => productVariantRow(category, variant, index)).join("")}</div>
+      ${button("add-product-variant", "Agregar presentación", { kind: "soft", extra: "small-button", icon: "plus" })}
     </div>
     <div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Guardar producto</button></div>
   </form>`;
@@ -1003,7 +1033,7 @@ function addMenuProduct(formData) {
     return;
   }
   const variants = [];
-  for (const index of [1, 2, 3]) {
+  for (let index = 1; formData.has(`variantName${index}`) || formData.has(`variantPrice${index}`); index += 1) {
     const variantName = String(formData.get(`variantName${index}`) || "").trim();
     const rawPrice = formData.get(`variantPrice${index}`);
     if (!variantName && !rawPrice) continue;
@@ -1012,16 +1042,15 @@ function addMenuProduct(formData) {
     variants.push({ name: variantName, price });
   }
   if (!variants.length) return notify("Agrega al menos una variante con un precio válido.", "warning");
-  const active = formData.get("active") === "on";
   const duplicate = state.menu.some((product) => product.name.toLowerCase() === name.toLowerCase() && product.id !== id);
   if (duplicate) return notify("Ya existe un producto con ese nombre.", "warning");
   if (persist((next) => {
     if (id) {
       const target = next.menu.find((product) => product.id === id);
       if (!target) throw new Error("El producto fue eliminado. Actualiza el menú e inténtalo de nuevo.");
-      Object.assign(target, { name, category, variants, active });
+      Object.assign(target, { name, category, variants, active: true });
     } else {
-      next.menu.push({ id: localId("item"), name, category, variants, active });
+      next.menu.push({ id: localId("item"), name, category, variants, active: true });
     }
   }, `Se guardó ${name} en el menú.`)) closeModal();
 }
@@ -1074,18 +1103,11 @@ function handleChange(event) {
   }
   if (target.matches("#product-category")) {
     const form = target.form;
-    const chosen = form?.elements.category?.value;
     if (!form) return;
-    const isDrink = chosen === "Bebidas";
-    if (isDrink && ["", "Personal"].includes(form.elements.variantName1.value)) form.elements.variantName1.value = "Unidad";
-    if (!isDrink && form.elements.variantName1.value === "Unidad") form.elements.variantName1.value = "Personal";
-    form.querySelector('label[for="variant-name-0"]').textContent = isDrink ? "Presentación" : "Variante principal";
-    form.querySelector('label[for="variant-price-0"]').textContent = isDrink ? "Precio de presentación" : "Precio principal";
-    form.elements.variantName1.placeholder = isDrink ? "Ej.: Unidad" : "Ej.: Personal";
-    form.elements.variantName2.placeholder = isDrink ? "Ej.: 1,5 L" : "Ej.: Mediana";
-    form.elements.variantName3.placeholder = isDrink ? "Ej.: Familiar" : "Ej.: Grande";
-    form.querySelector('label[for="variant-name-1"]').textContent = isDrink ? "Presentación 2 (opcional)" : "Variante 2 (opcional)";
-    form.querySelector('label[for="variant-name-2"]').textContent = isDrink ? "Presentación 3 (opcional)" : "Variante 3 (opcional)";
+    const variants = productVariantsFromForm(form);
+    if (target.value === "Bebidas" && variants[0]?.name === "Personal") variants[0].name = "Unidad";
+    if (target.value === "Pizzas" && variants[0]?.name === "Unidad") variants[0].name = "Personal";
+    renderProductVariantRows(form, variants);
   }
 }
 
@@ -1514,7 +1536,7 @@ async function startAuthenticatedApp(user) {
   loadingUserId = user.id;
   authenticatedUser = user;
   state = null;
-  app.innerHTML = '<main class="boot-screen" role="status">Cargando tu espacio de trabajo…</main>';
+  renderLoading("Cargando tu espacio de trabajo…");
   try {
     const profile = await getWorkspaceProfile(user.id);
     const workspace = await loadWorkspace(createInitialState(), user.id, profile.role);
@@ -1524,8 +1546,8 @@ async function startAuthenticatedApp(user) {
     state = validateState(workspace.state);
     loginMessage = "";
     const requestedScreen = location.hash.slice(1);
-    const defaultMode = requestedScreen === "kitchen" ? "kitchen" : "orders";
-    screen = allowedScreen(defaultMode) ? defaultMode : "orders";
+    const defaultScreen = allowedScreen("orders") ? "orders" : "kitchen";
+    screen = allowedScreen(requestedScreen) ? requestedScreen : defaultScreen;
     if (location.hash !== `#${screen}`) history.replaceState(null, "", `#${screen}`);
     render();
     startClock();
@@ -1621,7 +1643,7 @@ function addProductToDraft(productId) {
     menuItemId: product.id,
     name: product.name,
     category: product.category,
-    variant: product.category === "Bebidas" ? "Unidad" : variant.name,
+    variant: variant.name,
     quantity: draft.selectedQuantities[product.id] || 1,
     price: Number(variant.price) + extrasPrice,
     extras: extraItems.map((extra) => extra.name),
@@ -1676,6 +1698,25 @@ function actionClicked(action) {
 
   if (name.startsWith("#")) return;
   switch (name) {
+    case "add-product-variant": {
+      const form = document.querySelector("#product-form");
+      if (!form) return;
+      const variants = productVariantsFromForm(form);
+      variants.push({ name: "", price: "" });
+      renderProductVariantRows(form, variants, variants.length - 1);
+      return;
+    }
+    case "remove-product-variant": {
+      const form = document.querySelector("#product-form");
+      if (!form) return;
+      const variants = productVariantsFromForm(form);
+      if (variants.length <= 1) return notify("Cada producto necesita al menos una presentación.", "warning");
+      const index = Number(value);
+      if (!Number.isInteger(index) || index < 0 || index >= variants.length) return;
+      variants.splice(index, 1);
+      renderProductVariantRows(form, variants, Math.min(index, variants.length - 1));
+      return;
+    }
     case "refresh-workspace":
       refreshCurrentWorkspace().then(() => notify("Datos compartidos actualizados.")).catch((error) => {
         console.error("No se pudo actualizar el espacio compartido.", error);
@@ -2101,39 +2142,65 @@ async function registerServiceWorker() {
 
 function startApp() {
   installEventHandlers();
+  let authInitialized = false;
+  let pendingAuthChange = null;
+  const applyAuthChange = (event, session) => {
+    if (event === "INITIAL_SESSION") return;
+    if (event === "PASSWORD_RECOVERY") {
+      passwordRecovery = true;
+      loginMessage = "";
+      renderLogin();
+      return;
+    }
+    if (session?.user) {
+      if (authenticatedUser?.id === session.user.id && state) return;
+      void startAuthenticatedApp(session.user);
+    } else if (event === "SIGNED_OUT") {
+      backendUnsubscribe?.();
+      backendUnsubscribe = null;
+      loadingUserId = "";
+      authenticatedUser = null;
+      backendProfile = null;
+      backendRevision = 0;
+      passwordRecovery = false;
+      state = null;
+      modal = null;
+      renderLogin();
+    }
+  };
   supabase.auth.onAuthStateChange((event, session) => {
     window.setTimeout(() => {
-      if (event === "PASSWORD_RECOVERY") {
-        passwordRecovery = true;
-        loginMessage = "";
-        renderLogin();
+      if (event === "INITIAL_SESSION") return;
+      if (!authInitialized) {
+        pendingAuthChange = { event, session };
         return;
       }
-      if (session?.user) {
-        if (authenticatedUser?.id === session.user.id && state) return;
-        void startAuthenticatedApp(session.user);
-      } else if (event === "SIGNED_OUT" || event === "INITIAL_SESSION") {
-        backendUnsubscribe?.();
-        backendUnsubscribe = null;
-        loadingUserId = "";
-        authenticatedUser = null;
-        backendProfile = null;
-        backendRevision = 0;
-        passwordRecovery = false;
-        state = null;
-        modal = null;
-        renderLogin();
-      }
+      applyAuthChange(event, session);
     }, 0);
   });
   supabase.auth.getSession().then(({ data, error }) => {
     if (error) throw error;
-    if (data.session?.user) void startAuthenticatedApp(data.session.user);
-    else renderLogin();
+    authInitialized = true;
+    if (pendingAuthChange) {
+      const { event, session } = pendingAuthChange;
+      pendingAuthChange = null;
+      applyAuthChange(event, session);
+    } else if (data.session?.user) {
+      void startAuthenticatedApp(data.session.user);
+    } else {
+      renderLogin();
+    }
   }).catch((error) => {
+    authInitialized = true;
     console.error("No se pudo comprobar la sesión de Supabase.", error);
-    loginMessage = `No se pudo comprobar la sesión: ${error.message || "error de conexión"}.`;
-    renderLogin();
+    if (pendingAuthChange) {
+      const { event, session } = pendingAuthChange;
+      pendingAuthChange = null;
+      applyAuthChange(event, session);
+    } else {
+      loginMessage = `No se pudo comprobar la sesión: ${error.message || "error de conexión"}.`;
+      renderLogin();
+    }
   });
   registerServiceWorker();
 }

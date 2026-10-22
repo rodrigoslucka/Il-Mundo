@@ -38,7 +38,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   outline-offset: 2px;
 }
 
-.boot-screen, .error-screen { max-width: 600px; margin: 12vh auto; padding: 28px; color: var(--muted); }
+.boot-screen { display: flex; min-height: 100vh; flex-direction: column; align-items: center; justify-content: center; gap: 17px; padding: 24px; color: var(--muted); text-align: center; }
+.boot-screen strong { font-size: 13px; font-weight: 600; }
+.loading-pizza { width: 76px; height: 76px; animation: pizza-spin 1.6s linear infinite; filter: drop-shadow(0 8px 12px rgb(169 54 33 / 17%)); }
+@keyframes pizza-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-pizza { animation-duration: 8s; } }
+.error-screen { max-width: 600px; margin: 12vh auto; padding: 28px; color: var(--muted); }
 .error-screen { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
 .error-screen p { line-height: 1.65; }
 .auth-page { display: grid; min-height: 100vh; padding: 24px; place-items: center; background: radial-gradient(ellipse at 18% 16%, rgb(244 184 89 / 18%), transparent 35%), #fff8ef; }
@@ -416,6 +421,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .menu-choice-dialog .menu-picker-note { min-height: 42px; font-size: 12px; }
 .product-variants-grid { display: grid; gap: 10px; }
 .product-variant-row { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.product-variant-price { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px; }
+.variant-remove { width: 36px; height: 40px; margin-bottom: 0; }
 .product-variant-row[hidden] { display: none; }
 .menu-picker-add-row { display: flex; align-items: center; justify-content: space-between; gap: 5px; }
 .menu-picker-quantity { gap: 3px; }

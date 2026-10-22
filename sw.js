@@ -1,11 +1,11 @@
-const CACHE_NAME = "il-mundo-app-v26";
+const CACHE_NAME = "il-mundo-app-v30";
 const APP_SHELL = [
   "./",
   "./index.html",
-  "./src/styles.css?v=21",
+  "./src/styles.css?v=23",
   "./src/diagnostics.js?v=13",
   "./src/data.js?v=10",
-  "./src/app.js?v=22",
+  "./src/app.js?v=25",
   "./src/backend.js",
   "./src/supabase-config.js",
   "./src/features/cash/export.js",
