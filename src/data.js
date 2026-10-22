@@ -25,9 +25,8 @@ export function createInitialState() {
     version: 1,
     settings: {
       businessName: "Il Mundo",
-      currency: "USD",
+      currency: "BOB",
       paymentMethods: ["Efectivo", "QR"],
-      deliveryFee: 2,
       menuCategories: ["Pizzas", "Bebidas", "Postres"],
       extras: [
         { id: "extra-mozzarella", name: "Mozzarella extra", price: 1.5 },
@@ -88,6 +87,11 @@ export function validateState(value) {
   ) {
     throw new Error("El archivo no contiene datos de Il Mundo compatibles.");
   }
+  if (value.settings.currency === "USD") value.settings.currency = "BOB";
+  delete value.settings.deliveryFee;
+  for (const order of value.orders) {
+    if (order && typeof order === "object") delete order.deliveryFee;
+  }
   const menuCategories = Array.isArray(value.settings.menuCategories)
     ? value.settings.menuCategories.filter((category) => typeof category === "string" && category.trim())
     : [];
@@ -126,19 +130,18 @@ export function activeCashSession(state) {
 }
 
 export function orderTotal(order) {
-  const items = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  return items + (order.channel === "delivery" ? Number(order.deliveryFee || 0) : 0);
+  return order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 }
 
-export function formatMoney(amount, currency = "USD") {
+export function formatMoney(amount, currency = "BOB") {
   try {
-    return new Intl.NumberFormat("es", {
+    return new Intl.NumberFormat(currency === "BOB" ? "es-BO" : "es", {
       style: "currency",
       currency,
       maximumFractionDigits: 2,
     }).format(Number(amount) || 0);
   } catch (error) {
     console.error("No se pudo formatear la moneda configurada.", error);
-    return `${Number(amount || 0).toFixed(2)} ${currency}`;
+    return `${Number(amount || 0).toFixed(2)} ${currency === "BOB" ? "Bs" : currency}`;
   }
 }

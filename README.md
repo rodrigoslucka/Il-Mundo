@@ -41,10 +41,12 @@ El servidor solo escucha en `127.0.0.1` y sirve los archivos estáticos. La base
 - Las comandas aparecen como tarjetas de cuatro columnas en pantallas grandes, ordenadas por prioridad. Azul indica pedidos en mesa; rojo, pedidos para llevar.
 - Las tarjetas son cuadradas: muestran el número del pedido, “Nueva orden” y la mesa o modalidad; azul indica pedidos en mesa y rojo, pedidos para llevar.
 - Toca una tarjeta para abrir una ventana con la pizza y su tamaño destacados, además de extras y notas necesarios para prepararla.
-- Al llegar una comanda, Cocina reproduce un aviso corto de dos tonos. El navegador permite el sonido después de la primera interacción con la app.
+- Al llegar una comanda, Cocina reproduce un aviso corto de dos tonos. En cada dispositivo, pulsa **Activar sonido** una vez para permitir la reproducción; deja la aplicación abierta para recibir avisos de nuevos pedidos.
 - Pulsa **Pedido finalizado** para marcar la comanda como lista: en Caja aparecerá un aviso verde con un sonido distinto. La orden seguirá visible en Caja como lista; no hay que confirmar después la entrega.
 
 También puedes instalar la PWA desde el navegador. Pedidos, menú y cuentas se comparten entre dispositivos conectados; los cambios requieren conexión a internet. Los datos de demostración anteriores guardados en `localStorage` no se migran automáticamente.
+
+Los precios se muestran en bolivianos (Bs). Los datos existentes configurados en dólares se actualizan a bolivianos sin cambiar los importes guardados.
 
 ## Estructura del proyecto
 
@@ -91,7 +93,7 @@ El despliegue publica la interfaz; la sincronización y los permisos se gestiona
 ## Estado y límites de esta primera versión
 
 - La interfaz y el backend están preparados para sincronizar datos y aplicar permisos por rol. La activación para uso real depende de la creación del administrador inicial, configuración de SMTP, publicación en Vercel y pruebas de permisos en ambos roles.
-- Los productos, precios, moneda, envío y mesas iniciales son **datos de ejemplo**. Las dos vistas operativas usan estos valores de muestra.
+- Los productos, precios, envío y mesas iniciales son **datos de ejemplo**; los precios se expresan en bolivianos (Bs). Las dos vistas operativas usan estos valores de muestra.
 - Los datos del navegador pueden borrarse. Descarga respaldos con cuidado: pueden incluir nombres, teléfonos y direcciones si los utilizas para hacer pruebas.
 - La app requiere internet para iniciar sesión y guardar/sincronizar cambios; no pone en cola escrituras sin conexión.
 - Al publicar cambios de código, actualiza las versiones de recursos de `index.html` y el `CACHE_NAME` y las rutas de recursos de `sw.js`. Así, la versión sin conexión y la versión en línea avanzan juntas.

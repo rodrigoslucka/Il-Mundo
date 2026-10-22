@@ -3,9 +3,10 @@
 ## Estado
 
 - La migración `supabase/migrations/20261021000100_secure_workspace.sql` ya se ejecutó en el proyecto Supabase asociado a esta app.
+- Antes de publicar esta versión, ejecuta `supabase/migrations/20261021000200_remove_delivery_fee.sql` en Supabase para quitar el ajuste antiguo y actualizar la validación de pedidos.
 - La función Edge `admin-users` ya está desplegada. Verifica el usuario con Supabase Auth y reserva las operaciones privilegiadas para administradores. La opción de validación JWT heredada está desactivada tanto en el panel como en `supabase/config.toml`, para que futuras publicaciones no dependan de la clave JWT legacy.
 - El navegador usa únicamente la configuración pública de [src/supabase-config.js](./src/supabase-config.js). El archivo no debe contener claves secretas.
-- Falta crear la primera cuenta administradora, configurar el correo saliente y publicar la app actualizada en Vercel. Hasta entonces, la app local muestra el inicio de sesión, pero no se podrá iniciar sesión con una cuenta inexistente.
+- Verifica que la primera cuenta administradora exista y tenga el rol `admin`; configura el correo saliente y publica la app actualizada en Vercel antes de invitar al equipo.
 
 ## Archivo de configuración del navegador
 
@@ -18,8 +19,8 @@ La función desplegada usa las variables administradas de Supabase Functions (`S
 ## Crear la primera cuenta administradora
 
 1. En Supabase abre **Authentication → URL Configuration** y añade las direcciones locales y de producción a **Redirect URLs**. La dirección local de esta prueba es `http://127.0.0.1:4173/**`; añade también el dominio Vercel una vez creado.
-2. Configura correo saliente confiable en **Authentication → SMTP Settings** antes de invitar al cliente. El envío predeterminado de Supabase tiene límites bajos para pruebas; un SMTP propio evita depender del envío compartido.
-3. Ve a **Authentication → Users → Invite user** e invita el correo del primer administrador. El trigger de la migración rechaza el registro público directo y solo crea perfiles de cuentas invitadas.
+2. En **Authentication → Sign In / Providers → Email**, habilita el proveedor de correo electrónico y el inicio de sesión con contraseña. Si el proveedor está deshabilitado, Supabase responde “Email logins are disabled”. Configura también correo saliente confiable en **Authentication → SMTP Settings** antes de invitar al equipo; el envío predeterminado de Supabase tiene límites bajos para pruebas.
+3. Ve a **Authentication → Users → Invite user** e invita el correo del primer administrador. No uses **Add user** ni el registro directo: el trigger de la migración rechaza cuentas que no sean invitadas y solo crea perfiles de cuentas invitadas. La persona debe aceptar la invitación y establecer una contraseña.
 4. Cuando la invitación figure en la lista, vuelve al **SQL Editor** y asigna el primer rol administrador. Sustituye el correo por el de esa cuenta:
 
    ```sql
@@ -36,6 +37,21 @@ La función desplegada usa las variables administradas de Supabase Functions (`S
 
 Después, el administrador podrá invitar cuentas desde **Configuración → Usuarios y roles**, cambiar sus roles y revocarlas. Las invitaciones requieren el SMTP configurado. La app no ofrece registro público.
 
+### Si aparece «Un administrador debe inicializar primero el espacio compartido»
+
+La cuenta pudo iniciar sesión, pero su perfil todavía tiene el rol `worker`. En **Supabase → SQL Editor**, asigna el rol `admin` a la primera cuenta usando su correo:
+
+```sql
+update public.il_mundo_profiles
+set role = 'admin'
+where user_id = (
+  select id from auth.users
+  where lower(email) = lower('tu-correo@ejemplo.com')
+);
+```
+
+Confirma que la consulta actualizó una fila. Si actualizó cero, comprueba que el correo existe en **Authentication → Users** y que tiene perfil. Cierra la sesión de la app e inicia sesión de nuevo; entonces el administrador podrá inicializar el espacio compartido.
+
 ## Publicar en Vercel
 
 1. Sube los cambios del repositorio a GitHub sin añadir secretos.
@@ -51,6 +67,8 @@ Después, el administrador podrá invitar cuentas desde **Configuración → Usu
 - Comprueba que el nuevo pedido aparece en tiempo real en el otro dispositivo.
 - Como trabajador, intenta acceder a Caja/Configuración por URL y confirma que la app lo rechaza. Las escrituras se vuelven a validar en PostgreSQL; ocultar pantallas no es el control de seguridad.
 - Como administrador, comprueba que el pedido incrementó la caja abierta, cambia un producto y confirma que el menú se sincroniza.
+- Como administrador, agrega o edita un producto y una variante; recarga la app en otro dispositivo y confirma que aparecen con sus precios. El menú completo, sus variantes y los ajustes se guardan en `il_mundo_state.data` de Supabase; no dependen del `localStorage` del dispositivo.
+- Crea pedidos de salón, para llevar y delivery; comprueba que el total y la caja solo incluyan los productos y sus variantes.
 - Prueba cerrar sesión, recuperar contraseña y volver a iniciar sesión.
 
 Las escrituras necesitan conexión; no se almacenan cambios sin conexión para sincronizarlos luego. Los datos de demostración que existían en `localStorage` no se suben automáticamente ni se borran. El primer estado remoto se crea con el menú de ejemplo; exporta y revisa cualquier respaldo local antes de decidir importar datos reales.
@@ -64,3 +82,4 @@ El plan gratuito sirve para la prueba del cliente, pero tiene límites de uso y 
 - El secreto de servicio, si alguna vez hay que configurarlo, pertenece únicamente a los secretos de Supabase Edge Functions. Nunca lo incluyas en archivos versionados.
 - La clave `sb_secret_...` compartida anteriormente se confirmó revocada. No la reutilices.
 - La base separa el estado de Caja y lo permite leer solo a administradores; RLS limita el acceso y las funciones PostgreSQL validan las operaciones de trabajadores.
+- Ejecuta el contenido completo de `supabase/migrations/20261021000200_remove_delivery_fee.sql` desde **Supabase → SQL Editor** antes de publicar la app. La migración quita el ajuste obsoleto de los datos guardados y deja la validación de pedidos en la base de datos.

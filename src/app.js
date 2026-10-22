@@ -8,7 +8,7 @@ import {
   saveState,
   todayKey,
   validateState,
-} from "./data.js?v=8";
+} from "./data.js?v=10";
 import {
   getWorkspaceProfile,
   inviteOrManageStaff,
@@ -57,6 +57,8 @@ const iconPaths = {
   phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7l.4 2.8a2 2 0 0 1-.6 1.7L7 10.1a16 16 0 0 0 6 6l1.9-1.9a2 2 0 0 1 1.7-.6l2.8.4a2 2 0 0 1 1.7 1.9z"/>',
   printer: '<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6zM18 12h.01"/>',
   wifi: '<path d="M5 12.5a11 11 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 19h.01"/><path d="M2 9a16 16 0 0 1 20 0"/>',
+  volume: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
+  mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6m0-6-5 6"/>',
 };
 
 let state;
@@ -281,6 +283,7 @@ function frame(pageContent) {
           ? `<time class="cash-date">${businessDate()}</time>`
           : `<div class="topbar-title"><strong>${esc(title)}</strong><span>${esc(state.settings.businessName)} · ${businessDate()}</span></div>`}
         <div class="topbar-actions">        ${compactCash ? cashAction : `<span class="clock" id="clock"></span><span class="connection-pill"><span class="online-dot"></span>${online ? "En línea" : "Sin conexión"}</span>`}
+          <button class="button soft small-button sound-toggle" type="button" data-action="${soundEnabledOnDevice ? "disable-sound" : "enable-sound"}" aria-label="${soundEnabledOnDevice ? "Desactivar sonido" : "Activar sonido"}" title="${soundEnabledOnDevice ? "Desactivar sonido" : "Activar sonido"}" aria-pressed="${soundEnabledOnDevice}">${icon(soundEnabledOnDevice ? "volume" : "mute")}<span>${soundEnabledOnDevice ? "Sonido activado" : "Activar sonido"}</span></button>
           ${backendSyncBlocked ? `<button class="button soft small-button" type="button" data-action="refresh-workspace">Actualizar</button>` : ""}
           ${isAdmin() ? `<button class="icon-button" type="button" data-action="navigate:settings" title="Configuración" aria-label="Configuración">${icon("settings")}</button>` : ""}
           <button class="icon-button" type="button" data-action="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión">${icon("logout")}</button>
@@ -405,7 +408,7 @@ function orderCard(order) {
   return `<article class="order-card">
     <div class="order-card-head"><div><div class="order-id">${esc(orderDisplayId(order))}</div><div class="order-meta">${badge(statusText, statusClass)}${badge(channelLabel(order.channel), "type")}</div></div><span class="ticket-age">${clockTime(order.createdAt)}</span></div>
     ${order.customerName ? `<div class="order-meta small muted">${esc(order.customerName)}</div>` : ""}
-    <div class="order-items">${items}${order.channel === "delivery" && order.deliveryFee ? `<div class="order-item-line"><strong>Envío</strong><span>${formatMoney(order.deliveryFee, state.settings.currency)}</span></div>` : ""}</div>
+    <div class="order-items">${items}</div>
     ${order.notes ? `<p class="order-notes">${icon("note")} ${esc(order.notes)}</p>` : ""}
     ${order.channel === "delivery" && order.address ? `<p class="small muted">${esc(order.address)}</p>` : ""}
     <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></span><span class="order-actions">${canUpdate ? actionButtons : ""}</span></div>
@@ -548,8 +551,7 @@ function renderSettings() {
 }
 
 function orderCartTotal() {
-  return draft.items.reduce((sum, item) => sum + item.price * item.quantity, 0) +
-    (draft.channel === "delivery" ? Number(state.settings.deliveryFee || 0) : 0);
+  return draft.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
 }
 
 function selectableVariants(product) {
@@ -837,7 +839,6 @@ function createOrder() {
     customerName: draft.channel === "dinein" ? "" : draft.customerName.trim(),
     phone: "",
     address: "",
-    deliveryFee: 0,
     notes: draft.channel === "dinein" ? "" : draft.notes.trim(),
     paymentMethod: draft.paymentMethod,
     items: draft.items,
@@ -845,7 +846,7 @@ function createOrder() {
     createdAt: new Date().toISOString(),
     createdBy: authenticatedUser?.id || state.activeMemberId,
     deliveryPersonId: "",
-    payment: { method: draft.paymentMethod, amount: orderTotal({ items: draft.items, channel: draft.channel, deliveryFee: 0 }), paidAt: new Date().toISOString() },
+    payment: { method: draft.paymentMethod, amount: orderTotal({ items: draft.items }), paidAt: new Date().toISOString() },
   };
   const stored = persist((next) => {
     next.orders.push(order);
@@ -866,8 +867,8 @@ function initialiseAudio() {
   if (!window.AudioContext) throw new Error("Este navegador no permite avisos sonoros.");
   if (!audioContext) audioContext = new AudioContext();
   return audioContext.resume().catch((error) => {
-    console.error("No se pudo iniciar el aviso sonoro.", error);
-    notify("El navegador bloqueó el sonido; revisa los permisos de audio del sitio.", "warning");
+    audioContext = null;
+    throw error;
   });
 }
 
@@ -1222,12 +1223,10 @@ async function submitForm(event) {
     case "settings": {
       const businessName = String(data.get("businessName") || "").trim();
       const currency = String(data.get("currency") || "");
-      const deliveryFee = Number(data.get("deliveryFee"));
       const paymentMethods = data.getAll("paymentMethods").map(String);
       const menuCategories = [...new Set(String(data.get("menuCategories") || "").split(/\r?\n/).map((category) => category.trim()).filter(Boolean))];
       const extrasText = String(data.get("extrasText") || "");
-      if (!businessName || !["USD", "EUR", "MXN", "COP", "ARS", "CLP", "PEN", "CRC", "UYU", "GTQ"].includes(currency)) return notify("Revisa el nombre del negocio y la moneda.", "warning");
-      if (!Number.isFinite(deliveryFee) || deliveryFee < 0) return notify("El costo de envío debe ser un monto mayor o igual a cero.", "warning");
+      if (!businessName || !["BOB", "USD", "EUR", "MXN", "COP", "ARS", "CLP", "PEN", "CRC", "UYU", "GTQ"].includes(currency)) return notify("Revisa el nombre del negocio y la moneda.", "warning");
       if (!paymentMethods.length) return notify("Selecciona al menos un medio de pago.", "warning");
       if (!menuCategories.length) return notify("Agrega al menos una categoría para el menú.", "warning");
       const categoriesInUse = new Set(state.menu.map((product) => product.category));
@@ -1249,7 +1248,7 @@ async function submitForm(event) {
         extraNames.add(name.toLowerCase());
         extras.push({ id: localId("extra"), name, price });
       }
-      if (!persist((next) => Object.assign(next.settings, { businessName, currency, deliveryFee, paymentMethods, menuCategories, extras }))) return;
+      if (!persist((next) => Object.assign(next.settings, { businessName, currency, paymentMethods, menuCategories, extras }))) return;
       return notify("Ajustes guardados.");
     }
     default:
@@ -1515,7 +1514,7 @@ async function startAuthenticatedApp(user) {
   loadingUserId = user.id;
   authenticatedUser = user;
   state = null;
-  renderLogin();
+  app.innerHTML = '<main class="boot-screen" role="status">Cargando tu espacio de trabajo…</main>';
   try {
     const profile = await getWorkspaceProfile(user.id);
     const workspace = await loadWorkspace(createInitialState(), user.id, profile.role);
@@ -1927,15 +1926,26 @@ function actionClicked(action) {
     case "enable-sound":
       if (!state.team.some((member) => member.id === state.activeMemberId)) return notify("Selecciona una cuenta válida para habilitar avisos.", "warning");
       try {
-        initialiseAudio();
-        soundEnabledOnDevice = true;
-        localStorage.setItem("ilmundo.sound.enabled", "true");
-        notify("Aviso sonoro activado en este dispositivo.");
-        playNotification();
+        void initialiseAudio().then(() => {
+          localStorage.setItem("ilmundo.sound.enabled", "true");
+          soundEnabledOnDevice = true;
+          render();
+          notify("Aviso sonoro activado en este dispositivo.");
+          playNotification();
+        }).catch((error) => {
+          console.error("No se pudo habilitar el aviso sonoro.", error);
+          notify(`No se pudo habilitar el aviso: ${error.message || "el navegador bloqueó el audio"}.`, "error");
+        });
       } catch (error) {
         console.error("No se pudo habilitar el aviso sonoro.", error);
         notify(`No se pudo habilitar el aviso: ${error.message}.`, "error");
       }
+      return;
+    case "disable-sound":
+      localStorage.setItem("ilmundo.sound.enabled", "false");
+      soundEnabledOnDevice = false;
+      render();
+      notify("Aviso sonoro desactivado en este dispositivo.");
       return;
     case "toggle-alerts": {
       if (!("Notification" in window)) return notify("Este navegador no admite notificaciones en segundo plano.", "warning");
@@ -2091,7 +2101,6 @@ async function registerServiceWorker() {
 
 function startApp() {
   installEventHandlers();
-  renderLogin();
   supabase.auth.onAuthStateChange((event, session) => {
     window.setTimeout(() => {
       if (event === "PASSWORD_RECOVERY") {

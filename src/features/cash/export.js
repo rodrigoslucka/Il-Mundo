@@ -282,7 +282,7 @@ export function createDailyBalanceWorkbook(state, dateKey) {
 
 function orderTotalForExport(order) {
   return Array.isArray(order.items)
-    ? order.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0) + Number(order.deliveryFee || 0)
+    ? order.items.reduce((sum, item) => sum + Number(item.price || 0) * Number(item.quantity || 0), 0)
     : 0;
 }
 

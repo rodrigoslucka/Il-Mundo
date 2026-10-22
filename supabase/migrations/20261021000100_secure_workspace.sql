@@ -113,9 +113,6 @@ begin
     v_total := v_total + (v_item ->> 'price')::numeric * (v_item ->> 'quantity')::integer;
   end loop;
 
-  if p_order ->> 'channel' = 'delivery' then
-    v_total := v_total + coalesce((p_order ->> 'deliveryFee')::numeric, 0);
-  end if;
   return (p_order #>> '{payment,amount}')::numeric = v_total;
 exception when invalid_text_representation or numeric_value_out_of_range then
   return false;

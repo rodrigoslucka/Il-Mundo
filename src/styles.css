@@ -148,6 +148,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .button.danger { color: var(--danger); background: var(--danger-soft); border-color: #f8e2df; }
 .button.ghost { background: transparent; border-color: transparent; }
 .button.small-button { min-height: 32px; padding: 0 10px; font-size: 11px; }
+.sound-toggle .icon { width: 15px; height: 15px; }
 .icon-button { display: inline-grid; width: 37px; height: 37px; flex: 0 0 auto; padding: 0; place-items: center; color: #746c63; background: #fff; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
 .icon-button:hover { color: var(--brand); background: #fcf7f3; }
 
@@ -543,6 +544,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar-actions { gap: 7px; }
   .clock { display: none; }
   .connection-pill { min-height: 27px; padding: 0 8px; font-size: 9px; }
+  .sound-toggle { width: 37px; flex: 0 0 37px; padding: 0; }
+  .sound-toggle span { display: none; }
   .page-content { padding: 21px 15px calc(88px + env(safe-area-inset-bottom, 0)); }
   .demo-banner { margin: 12px 15px 0; padding: 9px 11px; font-size: 10px; }
   .page-heading { align-items: flex-start; margin-bottom: 17px; }
