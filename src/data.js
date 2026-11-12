@@ -14,7 +14,7 @@ export const NAVIGATION = [
   { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
   { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner"] },
   { id: "tables", label: "Mesas", icon: "table", roles: ["owner"] },
-  { id: "cash", label: "Caja", icon: "wallet", roles: ["owner"] },
+  { id: "cash", label: "Caja", icon: "wallet", roles: ["owner", "cashier"] },
   { id: "menu", label: "Menú", icon: "menu", roles: ["owner"] },
   { id: "team", label: "Cuentas", icon: "users", roles: ["owner"] },
   { id: "settings", label: "Configuración", icon: "settings", roles: ["owner"] },
@@ -111,8 +111,14 @@ export function saveState(state) {
 }
 
 export function todayKey(date = new Date()) {
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/La_Paz",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const parts = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 export function activeCashSession(state) {

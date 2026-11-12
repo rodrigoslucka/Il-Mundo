@@ -47,8 +47,18 @@ export async function loadWorkspace(initialState, userId, role) {
   }
   if (!row) throw new Error("Un administrador debe inicializar primero el espacio compartido.");
 
+  const { error: ensureCashError } = await supabase.rpc("il_mundo_ensure_cash_session");
+  throwIfError(ensureCashError, "Asegurar la apertura diaria de caja");
+  const { data: latestRow, error: latestStateError } = await supabase
+    .from("il_mundo_state")
+    .select("data, revision")
+    .eq("id", 1)
+    .single();
+  throwIfError(latestStateError, "Actualizar la revisión de los datos compartidos");
+  row = latestRow;
+
   let cashState = { cashSessions: [] };
-  if (role === "admin") {
+  if (role === "admin" || role === "cashier") {
     const { data, error: cashError } = await supabase
       .from("il_mundo_cash_state")
       .select("data")
@@ -73,9 +83,9 @@ export async function loadWorkspace(initialState, userId, role) {
     team: profiles.map((member) => ({
       id: member.user_id,
       name: member.display_name,
-      role: member.role === "admin" ? "owner" : "worker",
+      role: member.role === "admin" ? "owner" : member.role === "cashier" ? "cashier" : "worker",
     })),
-    activeRole: role === "admin" ? "owner" : "worker",
+    activeRole: role === "admin" ? "owner" : role === "cashier" ? "cashier" : "worker",
     activeMemberId: profile.user_id,
     },
   };

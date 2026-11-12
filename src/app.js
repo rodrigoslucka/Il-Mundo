@@ -25,7 +25,6 @@ import {
   updatePassword,
 } from "./backend.js";
 import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
-import { createPaymentTotals } from "./features/cash/totals.js";
 import { renderCashPage } from "./features/cash/page.js";
 
 const app = document.querySelector("#app");
@@ -60,8 +59,6 @@ const iconPaths = {
   phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.4 19.4 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7l.4 2.8a2 2 0 0 1-.6 1.7L7 10.1a16 16 0 0 0 6 6l1.9-1.9a2 2 0 0 1 1.7-.6l2.8.4a2 2 0 0 1 1.7 1.9z"/>',
   printer: '<path d="M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><path d="M6 14h12v8H6zM18 12h.01"/>',
   wifi: '<path d="M5 12.5a11 11 0 0 1 14 0M8.5 16a5.5 5.5 0 0 1 7 0M12 19h.01"/><path d="M2 9a16 16 0 0 1 20 0"/>',
-  volume: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/>',
-  mute: '<path d="M11 5 6 9H3v6h3l5 4z"/><path d="m16 9 5 6m0-6-5 6"/>',
 };
 
 let state;
@@ -83,9 +80,7 @@ let loadingUserId = "";
 let loginMessage = "";
 let loginBusy = false;
 let passwordRecovery = false;
-const SOUND_ENABLED_KEY = "ilmundo.sound.enabled";
 const RETURN_SCREEN_KEY = "ilmundo.return-screen";
-let soundEnabledOnDevice = localStorage.getItem(SOUND_ENABLED_KEY) === "true";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
   { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
@@ -138,11 +133,11 @@ function localId(prefix) {
 }
 
 function businessDate(value = new Date()) {
-  return new Intl.DateTimeFormat("es", { dateStyle: "medium" }).format(value);
+  return new Intl.DateTimeFormat("es", { dateStyle: "medium", timeZone: "America/La_Paz" }).format(value);
 }
 
 function clockTime(value) {
-  return new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(new Date(value));
+  return new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit", timeZone: "America/La_Paz" }).format(new Date(value));
 }
 
 function formatTimestamp(value) {
@@ -240,11 +235,14 @@ function isAdmin() {
 }
 
 function memberRoleGroup(role) {
-  return role === "owner" ? "admin" : "worker";
+  if (role === "owner") return "admin";
+  if (role === "cashier") return "cashier";
+  return "worker";
 }
 
 function memberRoleLabel(role) {
-  return memberRoleGroup(role) === "admin" ? "Administrador" : "Trabajador";
+  const group = memberRoleGroup(role);
+  return group === "admin" ? "Administrador" : group === "cashier" ? "Caja" : "Trabajador";
 }
 
 function allowedScreen(page) {
@@ -264,7 +262,7 @@ function navigationLink(item, mobile = false) {
 }
 
 function banner() {
-  return `<div class="demo-banner">${icon("wifi")}<span><strong>Espacio compartido.</strong> Los pedidos y el menú se sincronizan entre los dispositivos conectados. La caja solo está disponible para administradores.</span></div>`;
+  return `<div class="demo-banner">${icon("wifi")}<span><strong>Espacio compartido.</strong> Los pedidos y el menú se sincronizan entre los dispositivos conectados. La caja está disponible para administradores y el rol Caja.</span></div>`;
 }
 
 function renderModalLayer() {
@@ -287,9 +285,8 @@ function frame(pageContent) {
     || (["settings", "menu", "team"].includes(screen) ? settingsTitle : state.settings.businessName);
   const online = navigator.onLine;
   const compactCash = screen === "orders";
-  const session = activeCashSession(state);
-  const cashAction = compactCash && isAdmin()
-    ? button(session ? "close-cash" : "open-cash", session ? "Cerrar caja" : "Abrir caja", { kind: "soft", icon: "wallet", extra: "small-button cash-header-action" })
+  const cashAction = compactCash && (isAdmin() || hasActiveRole("cashier"))
+    ? button("navigate:cash", "Caja", { kind: "soft", icon: "wallet", extra: "small-button cash-header-action" })
     : "";
   return `<div class="app-shell ${screen === "kitchen" ? "kitchen-mode" : ""} ${compactCash ? "cash-entry-mode" : ""}">
     <aside class="sidebar">
@@ -311,7 +308,6 @@ function frame(pageContent) {
           ? `<time class="cash-date">${businessDate()}</time>`
           : `<div class="topbar-title"><strong>${esc(title)}</strong><span>${esc(state.settings.businessName)} · ${businessDate()}</span></div>`}
         <div class="topbar-actions">        ${compactCash ? cashAction : `<span class="clock" id="clock"></span><span class="connection-pill"><span class="online-dot"></span>${online ? "En línea" : "Sin conexión"}</span>`}
-          <button class="button soft small-button sound-toggle" type="button" data-action="${soundEnabledOnDevice ? "disable-sound" : "enable-sound"}" aria-label="${soundEnabledOnDevice ? "Desactivar sonido" : "Activar sonido"}" title="${soundEnabledOnDevice ? "Desactivar sonido" : "Activar sonido"}" aria-pressed="${soundEnabledOnDevice}">${icon(soundEnabledOnDevice ? "volume" : "mute")}<span>${soundEnabledOnDevice ? "Sonido activado" : "Activar sonido"}</span></button>
           ${backendSyncBlocked ? `<button class="button soft small-button" type="button" data-action="refresh-workspace">Actualizar</button>` : ""}
           ${isAdmin() ? `<button class="icon-button" type="button" data-action="navigate:settings" title="Configuración" aria-label="Configuración">${icon("settings")}</button>` : ""}
           <button class="icon-button" type="button" data-action="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión">${icon("logout")}</button>
@@ -389,16 +385,16 @@ function renderHome() {
   const paidToday = orders.filter((order) => order.payment?.paidAt);
   const totalToday = paidToday.reduce((sum, order) => sum + orderTotal(order), 0);
   const currentCash = activeCashSession(state);
-  const canSeeSales = isAdmin();
+  const canSeeSales = isAdmin() || hasActiveRole("cashier");
   const nextOrders = [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
   const actions = [
     { title: "Nuevo pedido", subtitle: "Tomar una comanda", icon: "plus", action: "new-order", allowed: true },
     { title: "Ver cocina", subtitle: `${notReady.length} ${notReady.length === 1 ? "pedido pendiente" : "pedidos pendientes"}`, icon: "chef", action: "navigate:kitchen", allowed: isAdmin() },
-    { title: "Abrir caja", subtitle: currentCash ? "La caja está abierta" : "Registrar monto inicial", icon: "wallet", action: "open-cash", allowed: canSeeSales && !currentCash },
+    { title: "Ver caja", subtitle: currentCash ? "La caja está abierta" : "Apertura automática a las 00:01", icon: "wallet", action: "navigate:cash", allowed: canSeeSales },
     { title: "Ver mesas", subtitle: `${state.tables.length} mesas`, icon: "table", action: "navigate:tables", allowed: isAdmin() },
   ].filter((item) => item.allowed);
   const cashSummary = canSeeSales
-    ? `<section class="cash-callout"><div><strong>${currentCash ? "Caja abierta" : "Caja sin abrir"}</strong><p>${currentCash ? `Apertura ${clockTime(currentCash.openedAt)} · Los pagos se anotan al confirmar cada pedido.` : "Abre el turno antes de confirmar pedidos para incluir los pagos."}</p></div>${button(currentCash ? "navigate:cash" : "open-cash", currentCash ? "Ver caja" : "Abrir caja", { kind: "soft", extra: "small-button", icon: "wallet" })}</section>`
+    ? `<section class="cash-callout"><div><strong>${currentCash ? "Caja abierta" : "Caja cerrada"}</strong><p>${currentCash ? `Apertura ${clockTime(currentCash.openedAt)} · Cierre automático a las 23:59.` : "La caja se abrirá automáticamente a las 00:01."}</p></div>${button("navigate:cash", "Ver caja", { kind: "soft", extra: "small-button", icon: "wallet" })}</section>`
     : "";
   return `${pageHeading("LA PIZZERÍA, DE UN VISTAZO", "Buen día", "Un espacio simple para coordinar el salón, la cocina y cada pedido.", button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }))}
     ${isAdmin() ? cashSummary : ""}
@@ -539,10 +535,6 @@ function renderTables() {
     <section style="margin-top:20px" class="notice">${icon("alert")}<span>Este plano inicial tiene mesas de ejemplo. Puedes adaptar el número y la capacidad cuando confirmes la distribución real del salón.</span></section>`;
 }
 
-function methodTotals(transactions) {
-  return createPaymentTotals(transactions, state.settings.paymentMethods);
-}
-
 function pricePills(product) {
   return product.variants.map((variant) => `<span class="price-label">${esc(variant.name)} · ${formatMoney(variant.price, state.settings.currency)}</span>`).join("");
 }
@@ -550,10 +542,10 @@ function pricePills(product) {
 function renderTeam() {
   if (!isAdmin()) return `${pageHeading("CUENTAS", "Acceso restringido", "Solo el administrador puede administrar las cuentas.")}`;
   const members = state.team.filter((member) => teamFilter === "all" || memberRoleGroup(member.role) === teamFilter);
-  const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["worker", "Trabajadores"]];
+  const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["cashier", "Caja"], ["worker", "Trabajadores"]];
   return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Invita por correo y administra los permisos de las cuentas.", button("add-member", "Invitar usuario", { kind: "primary", icon: "plus" }))}
     <div class="filter-bar">${roleFilter.map(([id, label]) => `<button class="filter-chip ${teamFilter === id ? "selected" : ""}" type="button" data-action="filter-team:${esc(id)}">${esc(label)}</button>`).join("")}</div>
-    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta autenticada"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>
+    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta autenticada"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>
     <div class="notice" style="margin-top:16px">${icon("alert")}<span>Los permisos también se validan en Supabase. Las invitaciones dependen de que el correo saliente del proyecto esté configurado.</span></div>`;
 }
 
@@ -733,32 +725,11 @@ function modalContent(current) {
         body: `<p class="small muted" style="line-height:1.6">La identidad y los permisos que aparecen en pantalla son una simulación. No son cuentas de usuario reales.</p><div>${state.team.map((member) => `<button type="button" class="role-card" style="width:100%;text-align:left;cursor:pointer;margin-top:8px" data-action="switch-member:${esc(member.id)}"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${memberRoleLabel(member.role)} · perfil local</span></span>${member.id === state.activeMemberId ? badge("Actual", "preparing") : icon("arrow")}</button>`).join("")}</div>`,
         footer: `<button class="button" type="button" data-action="close-modal">Volver</button>`,
       };
-    case "cash-open":
-      return {
-        body: `<form id="cash-form" data-form="cash-open"><div class="form-stack"><div class="notice">${icon("wallet")}<span>Anota el efectivo que hay en el cajón al inicio del turno. Para esta prueba es una referencia manual.</span></div><div class="form-field"><label for="opening-amount">Monto de apertura</label><input id="opening-amount" class="form-control" type="number" name="amount" min="0" step="0.01" required placeholder="0.00" value="0"></div></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">${icon("check")}Abrir caja</button></div></form>`,
-        footer: "",
-      };
-    case "cash-close": {
-      const session = activeCashSession(state);
-      const totals = methodTotals(session?.transactions || []);
-      const cash = totals.Efectivo || 0;
-      const qr = totals.QR || 0;
-      const totalGenerated = Object.values(totals).reduce((sum, amount) => sum + amount, 0);
-      const expected = Number(session?.openingAmount || 0) + cash;
-      const otherTotals = Object.entries(totals)
-        .filter(([method, amount]) => !["Efectivo", "QR"].includes(method) && amount > 0)
-        .map(([method, amount]) => `<div class="stat-row"><span>${esc(method)} (anterior)</span><strong>${formatMoney(amount, state.settings.currency)}</strong></div>`)
-        .join("");
-      return {
-        body: `<form id="close-cash-form" data-form="cash-close"><div class="form-stack"><div class="notice">${icon("alert")}<span>Se incluyen los pagos de los pedidos confirmados durante este turno. Cuenta el efectivo real antes de cerrar.</span></div><section class="cash-close-summary"><div class="stat-row total"><span>Total generado</span><strong>${formatMoney(totalGenerated, state.settings.currency)}</strong></div><div class="stat-row"><span>Efectivo</span><strong>${formatMoney(cash, state.settings.currency)}</strong></div><div class="stat-row"><span>QR</span><strong>${formatMoney(qr, state.settings.currency)}</strong></div>${otherTotals}</section><div class="form-field"><label for="counted-amount">Efectivo contado al cierre</label><input id="counted-amount" class="form-control" type="number" name="amount" min="0" step="0.01" required placeholder="0.00"></div><p class="small muted">Efectivo esperado en caja (incluye la apertura): <strong>${formatMoney(expected, state.settings.currency)}</strong> · la diferencia se calculará al guardar.</p><div class="form-field"><label for="close-notes">Observación (opcional)</label><textarea class="form-textarea" id="close-notes" name="notes" maxlength="250" placeholder="Comentario del cierre"></textarea></div></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">${icon("check")}Cerrar turno</button></div></form>`,
-        footer: "",
-      };
-    }
     case "product-edit":
       return { body: menuEditorForm(current.data.product, current.data.category), footer: "" };
     case "team-add":
       return {
-        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="worker">Trabajador</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario define su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
+        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="cashier">Caja</option><option value="worker">Trabajador</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario define su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
         footer: "",
       };
     case "assign-delivery":
@@ -782,8 +753,6 @@ function openModal(kind, options = {}) {
     title: options.title || ({
       "new-order": "Nuevo pedido",
       "switch-role": "Vista previa de un perfil",
-      "cash-open": "Abrir caja",
-      "cash-close": "Cerrar caja",
       "assign-delivery": "Asignar repartidor",
       "product-edit": options.product ? "Editar producto" : "Agregar producto",
       "team-add": "Agregar una cuenta",
@@ -918,8 +887,9 @@ function createOrder() {
 }
 
 function initialiseAudio() {
-  if (!window.AudioContext) throw new Error("Este navegador no permite avisos sonoros.");
-  if (!audioContext) audioContext = new AudioContext();
+  const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextConstructor) throw new Error("Este navegador no permite avisos sonoros.");
+  if (!audioContext) audioContext = new AudioContextConstructor();
   return audioContext.resume().catch((error) => {
     audioContext = null;
     throw error;
@@ -927,7 +897,7 @@ function initialiseAudio() {
 }
 
 function playNotification() {
-  if (!soundEnabledOnDevice || !audioContext) return;
+  if (!audioContext) return;
   try {
     if (audioContext.state === "suspended") {
       audioContext.resume().then(playNotification).catch((error) => {
@@ -958,7 +928,7 @@ function playNotification() {
 }
 
 function playReadyNotification() {
-  if (!soundEnabledOnDevice || !audioContext) return;
+  if (!audioContext) return;
   try {
     if (audioContext.state === "suspended") {
       audioContext.resume().then(playReadyNotification).catch((error) => {
@@ -1028,26 +998,6 @@ function updateOrderStatus(orderId, status) {
   }
 }
 
-function commitCloseCash(amount, notes) {
-  const session = activeCashSession(state);
-  if (!isAdmin() || !session) return notify("Solo el administrador puede cerrar la caja.", "error");
-  if (!Number.isFinite(amount) || amount < 0) return notify("Ingresa un monto de efectivo contado válido.", "error");
-  if (persist((next) => {
-    const target = next.cashSessions.find((item) => item.id === session.id);
-    if (!target || target.closedAt) throw new Error("La caja ya se cerró en otra pestaña.");
-    const totals = methodTotals(target.transactions || []);
-    target.countedAmount = amount;
-    target.closingNotes = notes;
-    target.totalGenerated = Object.values(totals).reduce((sum, total) => sum + total, 0);
-    target.cashSales = totals.Efectivo || 0;
-    target.qrSales = totals.QR || 0;
-    target.closedAt = new Date().toISOString();
-  }, "Caja cerrada. Descargando el balance de Excel.")) {
-    closeModal();
-    exportCashExcel();
-  }
-}
-
 function addMenuProduct(formData) {
   const id = String(formData.get("id") || "");
   const name = String(formData.get("name") || "").trim();
@@ -1092,7 +1042,7 @@ function handleChange(event) {
     if (!isAdmin()) return notify("Solo el administrador puede modificar cuentas.", "error");
     const memberId = target.dataset.memberRole;
     const member = state.team.find((person) => person.id === memberId);
-    if (!member || !["admin", "worker"].includes(target.value) || memberId === state.activeMemberId) return notify("No se puede modificar esa cuenta.", "warning");
+    if (!member || !["admin", "cashier", "worker"].includes(target.value) || memberId === state.activeMemberId) return notify("No se puede modificar esa cuenta.", "warning");
     void changeStaffRole(member, target.value, target);
     return;
   }
@@ -1229,18 +1179,6 @@ async function submitForm(event) {
   if (!form.reportValidity()) return;
 
   switch (form.dataset.form) {
-    case "cash-open": {
-      const amount = Number(data.get("amount"));
-      if (!Number.isFinite(amount) || amount < 0) return notify("Indica un monto de apertura válido.", "warning");
-      if (activeCashSession(state)) return notify("La caja ya está abierta.", "warning");
-      if (persist((next) => {
-        next.cashSessions.push({ id: localId("cash"), date: todayKey(), openingAmount: amount, openedAt: new Date().toISOString(), openedBy: state.activeMemberId, transactions: [], closedAt: null });
-      }, "Caja abierta.")) closeModal();
-      break;
-    }
-    case "cash-close":
-      commitCloseCash(Number(data.get("amount")), String(data.get("notes") || "").trim());
-      break;
     case "product":
       addMenuProduct(data);
       break;
@@ -1248,7 +1186,7 @@ async function submitForm(event) {
       const name = String(data.get("name") || "").trim();
       const email = String(data.get("email") || "").trim();
       const role = String(data.get("role") || "");
-      if (!name || !email || !["admin", "worker"].includes(role)) return notify("Completa el nombre, correo y tipo de cuenta.", "warning");
+      if (!name || !email || !["admin", "cashier", "worker"].includes(role)) return notify("Completa el nombre, correo y tipo de cuenta.", "warning");
       try {
         await inviteOrManageStaff("invite", { name, email, role });
         closeModal();
@@ -1320,7 +1258,8 @@ async function refreshCurrentWorkspace() {
 async function changeStaffRole(member, role, control) {
   try {
     await inviteOrManageStaff("role", { userId: member.id, role });
-    notify(`${member.name} ahora tiene acceso de ${role === "admin" ? "administrador" : "trabajador"}.`);
+    const roleLabel = role === "admin" ? "administrador" : role === "cashier" ? "Caja" : "trabajador";
+    notify(`${member.name} ahora tiene acceso de ${roleLabel}.`);
     await refreshCurrentWorkspace();
   } catch (error) {
     console.error("No se pudo cambiar el rol de la cuenta.", error);
@@ -1362,6 +1301,7 @@ async function deleteStaffAccount(memberId) {
 }
 
 function exportData() {
+  if (!isAdmin()) return notify("Solo el administrador puede exportar un respaldo.", "error");
   try {
     const file = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
     const link = document.createElement("a");
@@ -1527,7 +1467,7 @@ function render() {
   };
   app.innerHTML = frame((pages[screen] || renderHome)());
   const clock = document.querySelector("#clock");
-  if (clock) clock.textContent = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+  if (clock) clock.textContent = clockTime(new Date());
 }
 
 function renderLogin() {
@@ -1862,16 +1802,6 @@ function actionClicked(action) {
     case "cart-minus":
       adjustDraftItem(Number(value), -1);
       return;
-    case "open-cash":
-      if (!isAdmin()) return notify("Solo el administrador puede abrir la caja.", "error");
-      if (activeCashSession(state)) return notify("La caja ya está abierta.", "warning");
-      openModal("cash-open");
-      return;
-    case "close-cash":
-      if (!isAdmin()) return notify("Solo el administrador puede cerrar la caja.", "error");
-      if (!activeCashSession(state)) return notify("No hay una caja abierta.", "warning");
-      openModal("cash-close");
-      return;
     case "start-order":
       updateOrderStatus(value, "preparing");
       return;
@@ -2011,30 +1941,6 @@ function actionClicked(action) {
       }
       return;
     }
-    case "enable-sound":
-      if (!state.team.some((member) => member.id === state.activeMemberId)) return notify("Selecciona una cuenta válida para habilitar avisos.", "warning");
-      try {
-        void initialiseAudio().then(() => {
-          localStorage.setItem(SOUND_ENABLED_KEY, "true");
-          soundEnabledOnDevice = true;
-          render();
-          notify("Aviso sonoro activado en este dispositivo.");
-          playNotification();
-        }).catch((error) => {
-          console.error("No se pudo habilitar el aviso sonoro.", error);
-          notify(`No se pudo habilitar el aviso: ${error.message || "el navegador bloqueó el audio"}.`, "error");
-        });
-      } catch (error) {
-        console.error("No se pudo habilitar el aviso sonoro.", error);
-        notify(`No se pudo habilitar el aviso: ${error.message}.`, "error");
-      }
-      return;
-    case "disable-sound":
-      localStorage.setItem(SOUND_ENABLED_KEY, "false");
-      soundEnabledOnDevice = false;
-      render();
-      notify("Aviso sonoro desactivado en este dispositivo.");
-      return;
     case "toggle-alerts": {
       if (!("Notification" in window)) return notify("Este navegador no admite notificaciones en segundo plano.", "warning");
       if (Notification.permission === "granted") {
@@ -2070,20 +1976,31 @@ function actionClicked(action) {
 
 function installEventHandlers() {
   let audioUnavailableNotified = false;
-  document.addEventListener("pointerdown", () => {
-    if (!state || !soundEnabledOnDevice || audioContext || audioUnavailableNotified) return;
+  const activateAudio = () => {
+    if (audioContext?.state === "running") return;
     try {
-      initialiseAudio().catch((error) => {
-        audioUnavailableNotified = true;
-        console.error("No se pudo activar el sonido al interactuar con la aplicación.", error);
-        notify(`No se pudo activar el sonido: ${error.message || "este navegador lo bloqueó"}.`, "warning", 5000);
+      initialiseAudio().then(() => {
+        audioUnavailableNotified = false;
+      }).catch((error) => {
+        console.error("No se pudo preparar el sonido de las notificaciones.", error);
+        if (!audioUnavailableNotified) {
+          audioUnavailableNotified = true;
+          notify(`No se pudo preparar el sonido: ${error.message || "este navegador lo bloqueó"}.`, "warning", 5000);
+        }
       });
     } catch (error) {
-      audioUnavailableNotified = true;
-      console.error("No se pudo activar el sonido al interactuar con la aplicación.", error);
-      notify(`No se pudo activar el sonido: ${error.message || "este navegador lo bloqueó"}.`, "warning", 5000);
+      console.error("No se pudo preparar el sonido de las notificaciones.", error);
+      if (!audioUnavailableNotified) {
+        audioUnavailableNotified = true;
+        notify(`No se pudo preparar el sonido: ${error.message || "este navegador lo bloqueó"}.`, "warning", 5000);
+      }
     }
-  }, { passive: true });
+  };
+  document.addEventListener("pointerdown", activateAudio, { passive: true });
+  document.addEventListener("keydown", activateAudio);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && audioContext?.state === "suspended") activateAudio();
+  });
 
   document.addEventListener("click", (event) => {
     if (event.target.classList.contains("menu-choice-backdrop")) {
@@ -2173,7 +2090,7 @@ function installEventHandlers() {
 function startClock() {
   window.setInterval(() => {
     const clock = document.querySelector("#clock");
-    if (clock) clock.textContent = new Intl.DateTimeFormat("es", { hour: "2-digit", minute: "2-digit" }).format(new Date());
+    if (clock) clock.textContent = clockTime(new Date());
   }, 30_000);
 }
 
