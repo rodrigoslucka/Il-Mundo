@@ -111,7 +111,9 @@ function cashRows(state) {
     const other = cents(Object.entries(totals).filter(([method]) => !["Efectivo", "QR"].includes(method)).reduce((sum, [, amount]) => sum + amount, 0));
     const expected = cents(opening + cash);
     const closed = Boolean(session.closedAt);
-    const counted = closed ? cents(session.countedAmount) : null;
+    const counted = closed && session.countedAmount !== null && session.countedAmount !== undefined
+      ? cents(session.countedAmount)
+      : null;
     summaryRows.push([
       session.id || "",
       session.date || "",
@@ -123,8 +125,8 @@ function cashRows(state) {
       qr,
       other,
       expected,
-      counted,
-      closed ? cents(counted - expected) : null,
+      counted === null && closed ? "Sin arqueo" : counted,
+      closed ? counted === null ? "Pendiente" : cents(counted - expected) : null,
       session.openedAt || "",
       session.closedAt || "",
     ]);
@@ -233,6 +235,16 @@ export function createCashWorkbook(state) {
   return zipStoredFiles(files);
 }
 
+export function createDailyCashWorkbook(state, dateKey) {
+  if (!state || !Array.isArray(state.cashSessions) || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+    throw new Error("No se encontraron datos válidos para exportar la caja del día.");
+  }
+  return createCashWorkbook({
+    ...state,
+    cashSessions: state.cashSessions.filter((session) => session.date === dateKey),
+  });
+}
+
 export function createDailyBalanceWorkbook(state, dateKey) {
   if (!state || !Array.isArray(state.orders) || !state.settings || !/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
     throw new Error("No se encontraron pedidos válidos para exportar el balance del día.");
@@ -287,8 +299,19 @@ function orderTotalForExport(order) {
 }
 
 export function cashWorkbookFilename(date = new Date()) {
-  const offset = date.getTimezoneOffset() * 60_000;
-  const dateKey = new Date(date.getTime() - offset).toISOString().slice(0, 10);
+  const dateParts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/La_Paz",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const parts = Object.fromEntries(dateParts.map(({ type, value }) => [type, value]));
+  const dateKey = `${parts.year}-${parts.month}-${parts.day}`;
+  return `il-mundo-balance-caja-${dateKey}.xlsx`;
+}
+
+export function dailyCashWorkbookFilename(dateKey) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) throw new Error("La fecha del balance no es válida.");
   return `il-mundo-balance-caja-${dateKey}.xlsx`;
 }
 

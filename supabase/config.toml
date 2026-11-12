@@ -1,2 +1,5 @@
 [functions.admin-users]
 verify_jwt = false
+
+[functions.daily-balance]
+verify_jwt = false

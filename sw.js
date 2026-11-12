@@ -1,4 +1,4 @@
-const CACHE_NAME = "il-mundo-app-v35";
+const CACHE_NAME = "il-mundo-app-v36";
 const APP_SHELL = [
   "./",
   "./index.html",

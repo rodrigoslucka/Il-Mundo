@@ -98,7 +98,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .profile-switch:hover { background: var(--background); }
 
 .main-area {
-  position: relative; isolation: isolate; min-height: 100vh; margin-left: 0;
+  position: relative; isolation: isolate; min-height: 100vh; margin-left: 238px;
   background:
     radial-gradient(ellipse at 86% 11%, rgb(244 184 89 / 13%), transparent 34%),
     radial-gradient(ellipse at 12% 82%, rgb(93 151 97 / 8%), transparent 31%),
@@ -153,7 +153,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .button.danger { color: var(--danger); background: var(--danger-soft); border-color: #f8e2df; }
 .button.ghost { background: transparent; border-color: transparent; }
 .button.small-button { min-height: 32px; padding: 0 10px; font-size: 11px; }
-.sound-toggle .icon { width: 15px; height: 15px; }
 .icon-button { display: inline-grid; width: 37px; height: 37px; flex: 0 0 auto; padding: 0; place-items: center; color: #746c63; background: #fff; border: 1px solid var(--line); border-radius: 9px; cursor: pointer; }
 .icon-button:hover { color: var(--brand); background: #fcf7f3; }
 
@@ -314,18 +313,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kitchen-modal-general-note { margin: 0; padding: 10px 12px; background: #fff5e2; border-radius: 9px; }
 .kitchen-order-modal .modal-footer .button { width: 100%; min-height: 48px; }
 
-.cash-status { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 16px; background: #fff; border: 1px solid var(--line); border-radius: 14px; }
+.cash-overview { display: grid; gap: 10px; }
+.cash-status { display: flex; min-height: 86px; align-items: center; justify-content: space-between; gap: 14px; padding: 17px 19px; background: #fff; border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); }
+.cash-status.is-open { border-color: #d7eadb; background: linear-gradient(110deg, #fff 58%, #f1f8f0); }
+.cash-status.is-closed { background: linear-gradient(110deg, #fff 58%, #faf6ef); }
 .cash-status-details { display: flex; align-items: center; gap: 11px; }
-.cash-status-icon { display: grid; width: 40px; height: 40px; place-items: center; color: #936523; background: #fbf0d9; border-radius: 13px; }
-.cash-status strong { display: block; font-size: 12px; }
+.cash-status-icon { display: grid; width: 44px; height: 44px; flex: 0 0 auto; place-items: center; color: #936523; background: #fbf0d9; border-radius: 14px; }
+.cash-status.is-open .cash-status-icon { color: #38815a; background: #e9f5e9; }
+.cash-status-label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 9px; font-weight: 750; letter-spacing: 1px; }
+.cash-status strong { display: block; font: 750 15px "Manrope", sans-serif; }
 .cash-status p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.cash-report-note { display: flex; align-items: flex-start; gap: 10px; padding: 12px 14px; color: #47634b; background: #f3f8f1; border: 1px solid #e3eedf; border-radius: 12px; }
+.cash-report-icon { display: grid; width: 27px; height: 27px; flex: 0 0 auto; place-items: center; color: #38815a; background: #e3f0e2; border-radius: 9px; }
+.cash-report-icon .icon { width: 15px; height: 15px; }
+.cash-report-note strong { display: block; font-size: 11px; }
+.cash-report-note p { margin: 3px 0 0; color: #68796a; font-size: 10px; line-height: 1.5; }
 .stat-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; border-bottom: 1px solid #f2efeb; font-size: 11px; }
 .stat-row:last-child { border-bottom: 0; }
 .stat-row span { color: var(--muted); }
 .stat-row strong { font-size: 11px; }
 .stat-row.total { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); font-weight: 700; }
 .stat-row.total span { color: var(--ink); }
-.cash-close-summary { padding: 10px 13px; background: #faf8f5; border: 1px solid var(--line); border-radius: 11px; }
 
 .product-admin-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .product-admin { padding: 13px; background: #fff; border: 1px solid var(--line); border-radius: 12px; }
@@ -477,7 +485,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 .mobile-menu {
-  position: fixed; inset: auto 0 0; z-index: 15; display: flex; align-items: stretch; justify-content: center; gap: 8px;
+  position: fixed; inset: auto 0 0; z-index: 15; display: none; align-items: stretch; justify-content: center; gap: 8px;
   padding: 6px 12px calc(6px + env(safe-area-inset-bottom, 0)); overflow-x: auto; background: rgb(255 253 248 / 96%);
   border-top: 1px solid #f0e1d1; box-shadow: 0 -5px 22px rgb(45 34 23 / 7%); scrollbar-width: none; backdrop-filter: blur(12px);
 }
@@ -485,8 +493,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mobile-menu .nav-link { position: relative; min-width: 86px; min-height: 50px; flex: 0 1 150px; flex-direction: column; justify-content: center; gap: 3px; padding: 4px 10px; border-radius: 9px; font-size: 10px; }
 .mobile-menu .nav-link .icon { width: 18px; height: 18px; }
 .mobile-menu .nav-count { position: absolute; top: 1px; right: calc(50% - 25px); min-width: 15px; height: 15px; padding: 0 3px; font-size: 8px; }
-.main-area { padding-bottom: calc(72px + env(safe-area-inset-bottom, 0)); }
-.sidebar { display: none; }
 .mobile-brand { display: none; }
 .sr-toast-live { position: absolute; }
 
@@ -532,7 +538,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @media (max-width: 1100px) {
   .sidebar { display: none; }
+  .mobile-menu { display: flex; }
   .main-area { margin-left: 0; }
+  .main-area { padding-bottom: calc(72px + env(safe-area-inset-bottom, 0)); }
   .topbar { padding-right: 22px; padding-left: 22px; }
   .page-content { padding-right: 22px; padding-left: 22px; }
   .demo-banner { margin-right: 22px; margin-left: 22px; }
@@ -551,8 +559,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .topbar-actions { gap: 7px; }
   .clock { display: none; }
   .connection-pill { min-height: 27px; padding: 0 8px; font-size: 9px; }
-  .sound-toggle { width: 37px; flex: 0 0 37px; padding: 0; }
-  .sound-toggle span { display: none; }
   .page-content { padding: 21px 15px calc(88px + env(safe-area-inset-bottom, 0)); }
   .demo-banner { margin: 12px 15px 0; padding: 9px 11px; font-size: 10px; }
   .page-heading { align-items: flex-start; margin-bottom: 17px; }

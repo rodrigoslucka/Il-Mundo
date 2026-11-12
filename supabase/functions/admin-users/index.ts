@@ -49,7 +49,7 @@ Deno.serve(async (request) => {
     const email = String(body.email || "").trim().toLowerCase();
     const name = String(body.name || "").trim();
     const role = body.role;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name || name.length > 60 || !["admin", "worker"].includes(role || "")) {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name || name.length > 60 || !["admin", "cashier", "worker"].includes(role || "")) {
       return respond({ error: "Revisa el correo, el nombre y el rol." }, 400);
     }
     const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
@@ -68,7 +68,7 @@ Deno.serve(async (request) => {
   }
 
   if (body.action === "role") {
-    if (!body.userId || !["admin", "worker"].includes(body.role || "")) {
+    if (!body.userId || !["admin", "cashier", "worker"].includes(body.role || "")) {
       return respond({ error: "Selecciona una cuenta y un rol válido." }, 400);
     }
     const { data: target, error: targetError } = await serviceClient
