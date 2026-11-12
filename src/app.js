@@ -3,13 +3,13 @@ import {
   activeCashSession,
   createInitialState,
   formatMoney,
-  loadState,
   NAVIGATION,
   orderTotal,
   saveState,
+  STORAGE_KEY,
   todayKey,
   validateState,
-} from "./data.js?v=10";
+} from "./data.js?v=11";
 import {
   getWorkspaceProfile,
   inviteOrManageStaff,
@@ -19,6 +19,7 @@ import {
   saveWorkspace,
   signIn,
   signOut,
+  subscribeAuthState,
   subscribeWorkspace,
   supabase,
   updatePassword,
@@ -83,6 +84,7 @@ let loginMessage = "";
 let loginBusy = false;
 let passwordRecovery = false;
 const SOUND_ENABLED_KEY = "ilmundo.sound.enabled";
+const RETURN_SCREEN_KEY = "ilmundo.return-screen";
 let soundEnabledOnDevice = localStorage.getItem(SOUND_ENABLED_KEY) === "true";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
@@ -106,6 +108,25 @@ function esc(value) {
 
 function renderLoading(message) {
   app.innerHTML = `<main class="boot-screen" role="status"><img class="loading-pizza" src="./assets/pizza.svg" alt=""><strong>${esc(message)}</strong></main>`;
+}
+
+function getRequestedScreen() {
+  const hashScreen = location.hash.slice(1);
+  if (NAVIGATION.some((item) => item.id === hashScreen)) return hashScreen;
+  try {
+    return sessionStorage.getItem(RETURN_SCREEN_KEY) || "";
+  } catch (error) {
+    console.error("No se pudo recuperar la última pantalla visitada.", error);
+    return "";
+  }
+}
+
+function rememberScreen(page) {
+  try {
+    sessionStorage.setItem(RETURN_SCREEN_KEY, page);
+  } catch (error) {
+    console.error("No se pudo guardar la última pantalla visitada.", error);
+  }
 }
 
 function initials(name) {
@@ -1454,6 +1475,7 @@ function resetDemo() {
       draft = null;
       screen = "orders";
       history.replaceState(null, "", "#orders");
+      rememberScreen(screen);
       render();
       notify("Se restauraron los datos de ejemplo en Supabase.");
       return;
@@ -1464,6 +1486,7 @@ function resetDemo() {
     draft = null;
     screen = "orders";
     history.replaceState(null, "", "#orders");
+    rememberScreen(screen);
     render();
     notify("Se restauraron los datos de ejemplo.");
   } catch (error) {
@@ -1533,11 +1556,26 @@ function renderLogin() {
   </section></main>`;
 }
 
+function renderWorkspaceError(error) {
+  app.innerHTML = `<main class="auth-page"><section class="auth-card">
+    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+    <h1>No se pudo cargar tu espacio</h1>
+    <div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(error.message || "Error inesperado al cargar los datos.")}</span></div>
+    <p>Tu sesión sigue activa. Comprueba tu conexión e inténtalo de nuevo.</p>
+    <button class="button primary auth-submit" type="button" data-action="retry-workspace">Intentar de nuevo</button>
+    <button class="auth-link" type="button" data-action="sign-out">Cerrar sesión</button>
+  </section></main>`;
+}
+
 async function startAuthenticatedApp(user) {
   if (authenticatedUser?.id === user.id && state) return;
   if (loadingUserId === user.id) return;
   loadingUserId = user.id;
+  backendUnsubscribe?.();
+  backendUnsubscribe = null;
   authenticatedUser = user;
+  backendProfile = null;
+  backendRevision = 0;
   state = null;
   renderLoading("Cargando tu espacio de trabajo…");
   try {
@@ -1548,10 +1586,11 @@ async function startAuthenticatedApp(user) {
     backendRevision = workspace.revision;
     state = validateState(workspace.state);
     loginMessage = "";
-    const requestedScreen = location.hash.slice(1);
+    const requestedScreen = getRequestedScreen();
     const defaultScreen = allowedScreen("orders") ? "orders" : "kitchen";
     screen = allowedScreen(requestedScreen) ? requestedScreen : defaultScreen;
     if (location.hash !== `#${screen}`) history.replaceState(null, "", `#${screen}`);
+    rememberScreen(screen);
     render();
     startClock();
     backendUnsubscribe?.();
@@ -1575,10 +1614,10 @@ async function startAuthenticatedApp(user) {
     });
   } catch (error) {
     console.error("No se pudo cargar el espacio de trabajo.", error);
+    if (authenticatedUser?.id !== user.id) return;
     backendProfile = null;
     state = null;
-    loginMessage = error.message || "No se pudo cargar el espacio de trabajo.";
-    renderLogin();
+    renderWorkspaceError(error);
   } finally {
     if (loadingUserId === user.id) loadingUserId = "";
   }
@@ -1607,7 +1646,7 @@ function showFatalError(error) {
   console.error("No se pudo iniciar Il Mundo.", error);
   let raw = null;
   try {
-    raw = localStorage.getItem("ilmundo.pizzeria.v1");
+    raw = localStorage.getItem(STORAGE_KEY);
   } catch (storageError) {
     console.error("No se pudieron leer los datos guardados para ofrecer un respaldo.", storageError);
   }
@@ -1625,6 +1664,7 @@ function navigate(page) {
   if (page === "team") settingsTab = "users";
   screen = page;
   if (location.hash !== `#${page}`) history.replaceState(null, "", `#${page}`);
+  rememberScreen(page);
   render();
 }
 
@@ -1701,6 +1741,10 @@ function actionClicked(action) {
 
   if (name.startsWith("#")) return;
   switch (name) {
+    case "retry-workspace":
+      if (authenticatedUser) void startAuthenticatedApp(authenticatedUser);
+      else renderLogin();
+      return;
     case "add-product-variant": {
       const form = document.querySelector("#product-form");
       if (!form) return;
@@ -1939,7 +1983,7 @@ function actionClicked(action) {
       });
       return;
     case "export-raw-data": {
-      const raw = localStorage.getItem("ilmundo.pizzeria.v1");
+      const raw = localStorage.getItem(STORAGE_KEY);
       if (raw === null) return notify("No quedan datos guardados para exportar.", "warning");
       const link = document.createElement("a");
       link.href = URL.createObjectURL(new Blob([raw], { type: "application/json" }));
@@ -2103,7 +2147,7 @@ function installEventHandlers() {
   });
 
   window.addEventListener("storage", (event) => {
-    if (event.key !== "ilmundo.pizzeria.v1" || !event.newValue) return;
+    if (event.key !== STORAGE_KEY || !event.newValue) return;
     try {
       const nextState = validateState(JSON.parse(event.newValue));
       announceOrdersCreated(nextState);
@@ -2145,8 +2189,6 @@ async function registerServiceWorker() {
 
 function startApp() {
   installEventHandlers();
-  let authInitialized = false;
-  let pendingAuthChange = null;
   const applyAuthChange = (event, session) => {
     if (event === "INITIAL_SESSION") {
       if (session?.user) void startAuthenticatedApp(session.user);
@@ -2170,27 +2212,13 @@ function startApp() {
       backendProfile = null;
       backendRevision = 0;
       passwordRecovery = false;
+      loginMessage = "";
       state = null;
       modal = null;
       renderLogin();
     }
   };
-  supabase.auth.onAuthStateChange((event, session) => {
-    window.setTimeout(() => {
-      if (event === "INITIAL_SESSION") {
-        authInitialized = true;
-        const initialAuthChange = pendingAuthChange || { event, session };
-        pendingAuthChange = null;
-        applyAuthChange(initialAuthChange.event, initialAuthChange.session);
-        return;
-      }
-      if (!authInitialized) {
-        pendingAuthChange = { event, session };
-        return;
-      }
-      applyAuthChange(event, session);
-    }, 0);
-  });
+  subscribeAuthState(applyAuthChange);
   registerServiceWorker();
 }
 

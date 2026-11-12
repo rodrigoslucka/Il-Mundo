@@ -15,12 +15,6 @@ function throwIfError(error, operation) {
   throw new Error(error.message || `No se pudo completar: ${operation}.`);
 }
 
-export async function getAuthenticatedUser() {
-  const { data, error } = await supabase.auth.getUser();
-  throwIfError(error, "Verificar la sesión");
-  return data.user;
-}
-
 export async function getWorkspaceProfile(userId) {
   const { data, error } = await supabase
     .from("il_mundo_profiles")
@@ -143,4 +137,26 @@ export async function requestPasswordReset(email) {
 export async function updatePassword(password) {
   const { error } = await supabase.auth.updateUser({ password });
   throwIfError(error, "Actualizar la contraseña");
+}
+
+export function subscribeAuthState(onChange) {
+  let authInitialized = false;
+  let pendingAuthChange = null;
+  const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    window.setTimeout(() => {
+      if (event === "INITIAL_SESSION") {
+        authInitialized = true;
+        const initialAuthChange = pendingAuthChange || { event, session };
+        pendingAuthChange = null;
+        onChange(initialAuthChange.event, initialAuthChange.session);
+        return;
+      }
+      if (!authInitialized) {
+        pendingAuthChange = { event, session };
+        return;
+      }
+      onChange(event, session);
+    }, 0);
+  });
+  return () => subscription.unsubscribe();
 }

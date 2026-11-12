@@ -106,16 +106,6 @@ export function validateState(value) {
   return value;
 }
 
-export function loadState() {
-  const stored = localStorage.getItem(STORAGE_KEY);
-  if (stored === null) {
-    const initialState = createInitialState();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(initialState));
-    return initialState;
-  }
-  return validateState(JSON.parse(stored));
-}
-
 export function saveState(state) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
