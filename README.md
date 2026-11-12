@@ -48,6 +48,8 @@ El servidor solo escucha en `127.0.0.1`; la base de datos y la autenticación es
 
 También puedes instalar la PWA desde el navegador. Pedidos, menú y cuentas se comparten entre dispositivos conectados; los cambios requieren conexión a internet. Los datos de demostración anteriores guardados en `localStorage` no se migran automáticamente.
 
+Las contraseñas las gestiona Supabase Auth y se almacenan con hashing seguro; esta aplicación no las guarda en `localStorage` ni en las tablas del negocio. Supabase conserva la sesión en el navegador y la restaura al recargar la página. La sección actual se conserva en la URL y por pestaña, así que después de iniciar sesión se vuelve a la pantalla donde estabas. Si la sesión sigue activa pero no se pueden cargar los datos compartidos, la app muestra un error con opción de reintento en lugar de pedir iniciar sesión otra vez.
+
 Los precios se muestran en bolivianos (Bs). Los datos existentes configurados en dólares se actualizan a bolivianos sin cambiar los importes guardados.
 
 ## Estructura del proyecto
