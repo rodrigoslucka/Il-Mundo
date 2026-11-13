@@ -5,3 +5,5 @@ Thumbs.db
 .vercel/
 node_modules/
 dist/
+.github/
+.vscode/
