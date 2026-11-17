@@ -85,8 +85,8 @@ let staffInvitations = [];
 const RETURN_SCREEN_KEY = "ilmundo.return-screen";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
-  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
-  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner"] },
+  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "worker"] },
+  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "worker"] },
 ];
 
 function icon(name, extraClass = "") {
@@ -167,6 +167,10 @@ function notify(message, kind = "success", duration = 3200) {
 }
 
 function persist(mutator, successMessage) {
+  if (!isAdmin() && !isCashier()) {
+    notify("Solo el administrador o Caja pueden modificar información.", "error");
+    return false;
+  }
   const next = JSON.parse(JSON.stringify(state));
   try {
     mutator(next);
@@ -233,6 +237,10 @@ function isAdmin() {
   return state.activeRole === "owner";
 }
 
+function isCashier() {
+  return state.activeRole === "cashier";
+}
+
 function memberRoleGroup(role) {
   if (role === "owner") return "admin";
   if (role === "cashier") return "cashier";
@@ -241,7 +249,7 @@ function memberRoleGroup(role) {
 
 function memberRoleLabel(role) {
   const group = memberRoleGroup(role);
-  return group === "admin" ? "Administrador" : group === "cashier" ? "Caja" : "Trabajador";
+  return group === "admin" ? "Administrador" : group === "cashier" ? "Caja" : "Cocina";
 }
 
 function allowedScreen(page) {
@@ -376,7 +384,7 @@ function renderHome() {
   const canSeeSales = isAdmin() || hasActiveRole("cashier");
   const nextOrders = [...orders].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5);
   const actions = [
-    { title: "Nuevo pedido", subtitle: "Tomar una comanda", icon: "plus", action: "new-order", allowed: true },
+    { title: "Nuevo pedido", subtitle: "Tomar una comanda", icon: "plus", action: "new-order", allowed: isAdmin() || isCashier() },
     { title: "Ver cocina", subtitle: `${notReady.length} ${notReady.length === 1 ? "pedido pendiente" : "pedidos pendientes"}`, icon: "chef", action: "navigate:kitchen", allowed: isAdmin() },
     { title: "Ver caja", subtitle: currentCash ? "La caja está abierta" : "Apertura automática a las 00:01", icon: "wallet", action: "navigate:cash", allowed: canSeeSales },
     { title: "Ver mesas", subtitle: `${state.tables.length} mesas`, icon: "table", action: "navigate:tables", allowed: isAdmin() },
@@ -384,7 +392,7 @@ function renderHome() {
   const cashSummary = canSeeSales
     ? `<section class="cash-callout"><div><strong>${currentCash ? "Caja abierta" : "Caja cerrada"}</strong><p>${currentCash ? `Apertura ${clockTime(currentCash.openedAt)} · Cierre automático a las 23:59.` : "La caja se abrirá automáticamente a las 00:01."}</p></div>${button("navigate:cash", "Ver caja", { kind: "soft", extra: "small-button", icon: "wallet" })}</section>`
     : "";
-  return `${pageHeading("LA PIZZERÍA, DE UN VISTAZO", "Buen día", "Un espacio simple para coordinar el salón, la cocina y cada pedido.", button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }))}
+  return `${pageHeading("LA PIZZERÍA, DE UN VISTAZO", "Buen día", "Un espacio simple para coordinar el salón, la cocina y cada pedido.", isAdmin() || isCashier() ? button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }) : "")}
     ${isAdmin() ? cashSummary : ""}
     <div class="metric-grid">
       <article class="card metric-card"><div class="metric-head"><span>Pedidos de hoy</span><span class="metric-icon">${icon("receipt")}</span></div><div class="metric-value">${orders.length}</div><div class="metric-foot">${notReady.length} ${notReady.length === 1 ? "en espera o cocina" : "en espera o cocina"}</div></article>
@@ -406,8 +414,8 @@ function renderHome() {
 
 function orderCard(order) {
   const [statusText, statusClass] = statusMeta(order.status);
-  const canPrepare = true;
-  const canTakeDelivery = order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
+  const canPrepare = isAdmin();
+  const canTakeDelivery = isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
   const canAssign = isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
   const canUpdate = (order.status === "new" && canPrepare) || (order.status === "preparing" && canPrepare) || canTakeDelivery || canAssign;
   const actionButtons = [
@@ -430,7 +438,7 @@ function orderCard(order) {
 function renderOrders() {
   const orders = todayOrders();
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const canCreateOrder = true;
+  const canCreateOrder = isAdmin() || isCashier();
   if (!canCreateOrder) {
     return `${pageHeading("DELIVERY", "Entregas pendientes", "", "")}
       ${orders.length ? `<div class="order-grid">${orders.map(orderCard).join("")}</div>` : `<div class="card">${emptyState("No hay entregas pendientes", "Los pedidos asignados aparecerán aquí.")}</div>`}`;
@@ -498,7 +506,7 @@ function kitchenOrderContent(orderId) {
       <div class="kitchen-modal-items">${items}</div>
       ${notes}
     </div>`,
-    footer: button(`complete-order:${order.id}`, completeLabel, { kind: "primary" }),
+    footer: isAdmin() ? button(`complete-order:${order.id}`, completeLabel, { kind: "primary" }) : "",
   };
 }
 
@@ -511,7 +519,7 @@ function occupiedTables() {
 function renderTables() {
   const busy = occupiedTables();
   const freeCount = state.tables.length - busy.length;
-  return `${pageHeading("SALÓN", "Mesas", `${freeCount} ${freeCount === 1 ? "mesa disponible" : "mesas disponibles"} · selecciona una mesa para iniciar una comanda.`, button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }))}
+  return `${pageHeading("SALÓN", "Mesas", `${freeCount} ${freeCount === 1 ? "mesa disponible" : "mesas disponibles"} · selecciona una mesa para iniciar una comanda.`, isAdmin() || isCashier() ? button("new-order", "Nuevo pedido", { kind: "primary", icon: "plus" }) : "")}
     <div class="table-grid">${state.tables.map((table) => {
       const order = todayOrders().find((item) => item.tableId === table.id && item.channel === "dinein" && !["ready", "delivered"].includes(item.status));
       const isOccupied = Boolean(order);
@@ -530,19 +538,19 @@ function pricePills(product) {
 function renderTeam() {
   if (!isAdmin()) return `${pageHeading("CUENTAS", "Acceso restringido", "Solo el administrador puede administrar las cuentas.")}`;
   const members = state.team.filter((member) => teamFilter === "all" || memberRoleGroup(member.role) === teamFilter);
-  const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["cashier", "Caja"], ["worker", "Trabajadores"]];
+  const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["cashier", "Caja"], ["worker", "Cocina"]];
   const invitationCards = staffInvitations.map((invitation) => `
     <article class="role-card">
       <span class="avatar">${esc(initials(invitation.name))}</span>
       <span class="role-card-main"><strong>${esc(invitation.name)}</strong><span>${esc(invitation.email)} · Invitación pendiente</span></span>
-      <span class="badge preparing">${esc(invitation.role === "admin" ? "Administrador" : invitation.role === "cashier" ? "Caja" : "Trabajador")}</span>
+      <span class="badge preparing">${esc(invitation.role === "admin" ? "Administrador" : invitation.role === "cashier" ? "Caja" : "Cocina")}</span>
       <button class="button soft small-button" type="button" data-action="resend-invitation:${esc(invitation.id)}" title="Reenviar invitación">Reenviar</button>
       <button class="icon-button" type="button" data-action="cancel-invitation:${esc(invitation.id)}" aria-label="Cancelar invitación de ${esc(invitation.name)}">${icon("close")}</button>
     </article>`).join("");
   return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Invita por correo y administra los permisos de las cuentas.", button("add-member", "Invitar usuario", { kind: "primary", icon: "plus" }))}
     <div class="filter-bar">${roleFilter.map(([id, label]) => `<button class="filter-chip ${teamFilter === id ? "selected" : ""}" type="button" data-action="filter-team:${esc(id)}">${esc(label)}</button>`).join("")}</div>
     ${invitationCards ? `<section class="panel" style="margin:16px 0"><div class="panel-title"><h2>Invitaciones pendientes</h2></div><div class="two-column">${invitationCards}</div></section>` : ""}
-    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta activa"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>`;
+    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta activa"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Cocina</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>`;
 }
 
 function renderSettings() {
@@ -730,7 +738,7 @@ function modalContent(current) {
       return { body: menuEditorForm(current.data.product, current.data.category), footer: "" };
     case "team-add":
       return {
-        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="cashier">Caja</option><option value="worker">Trabajador</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario define su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
+        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="cashier">Caja</option><option value="worker">Cocina</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario definirá su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
         footer: "",
       };
     case "assign-delivery":
@@ -775,7 +783,7 @@ function openModal(kind, options = {}) {
 }
 
 function startNewOrder(options = {}) {
-  if (!isAdmin() && !state.team.some((member) => member.id === state.activeMemberId && member.role !== "owner")) {
+  if (!isAdmin() && !isCashier()) {
     notify("Este perfil no puede crear pedidos.", "error");
     return;
   }
@@ -973,6 +981,7 @@ function publishNotification(order) {
 }
 
 function updateOrderStatus(orderId, status) {
+  if (!isAdmin()) return notify("Solo el administrador puede cambiar el estado de los pedidos.", "error");
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return notify("La comanda ya no está disponible.", "error");
   const authorized = status === "preparing"
@@ -1313,7 +1322,7 @@ async function cancelStaffInvitation(invitationId) {
 async function changeStaffRole(member, role, control) {
   try {
     await inviteOrManageStaff("role", { userId: member.id, role });
-    const roleLabel = role === "admin" ? "administrador" : role === "cashier" ? "Caja" : "trabajador";
+    const roleLabel = role === "admin" ? "Administrador" : role === "cashier" ? "Caja" : "Cocina";
     notify(`${member.name} ahora tiene acceso de ${roleLabel}.`);
     await refreshCurrentWorkspace();
   } catch (error) {
