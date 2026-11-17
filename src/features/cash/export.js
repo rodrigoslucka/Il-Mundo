@@ -96,8 +96,7 @@ function cashRows(state) {
     [],
     [
       "Turno", "Fecha", "Estado", "Abrió", "Monto de apertura", "Total generado",
-      "Efectivo", "QR", "Otros medios", "Efectivo esperado", "Efectivo contado",
-      "Diferencia", "Inicio", "Cierre",
+      "Efectivo", "QR", "Inicio", "Cierre",
     ],
   ];
   const paymentRows = [[`Movimientos de caja — ${state.settings?.businessName || "Il Mundo"}`], [], ["Turno", "Fecha y hora", "Pedido", "Medio de pago", "Importe"]];
@@ -108,12 +107,7 @@ function cashRows(state) {
     const opening = cents(session.openingAmount);
     const cash = totals.Efectivo || 0;
     const qr = totals.QR || 0;
-    const other = cents(Object.entries(totals).filter(([method]) => !["Efectivo", "QR"].includes(method)).reduce((sum, [, amount]) => sum + amount, 0));
-    const expected = cents(opening + cash);
     const closed = Boolean(session.closedAt);
-    const counted = closed && session.countedAmount !== null && session.countedAmount !== undefined
-      ? cents(session.countedAmount)
-      : null;
     summaryRows.push([
       session.id || "",
       session.date || "",
@@ -123,10 +117,6 @@ function cashRows(state) {
       cents(Object.values(totals).reduce((sum, amount) => sum + amount, 0)),
       cash,
       qr,
-      other,
-      expected,
-      counted === null && closed ? "Sin arqueo" : counted,
-      closed ? counted === null ? "Pendiente" : cents(counted - expected) : null,
       session.openedAt || "",
       session.closedAt || "",
     ]);
