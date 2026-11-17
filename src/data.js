@@ -16,17 +16,17 @@ export function normalizePizzaVariants(variants) {
 
 export const ROLES = {
   owner: "Administrador",
-  cashier: "Cajero",
+  cashier: "Caja",
   waiter: "Mozo",
   kitchen: "Cocina",
   delivery: "Repartidor",
-  worker: "Trabajador",
+  worker: "Cocina",
 };
 
 export const NAVIGATION = [
   { id: "home", label: "Resumen", icon: "home", roles: ["owner"] },
-  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "waiter", "kitchen", "delivery", "worker"] },
-  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner"] },
+  { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "worker"] },
+  { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "worker"] },
   { id: "tables", label: "Mesas", icon: "table", roles: ["owner"] },
   { id: "cash", label: "Caja", icon: "wallet", roles: ["owner", "cashier"] },
   { id: "menu", label: "Menú", icon: "menu", roles: ["owner"] },
@@ -59,7 +59,7 @@ export function createInitialState() {
     ],
     team: [
       { id: "staff-owner", name: "Dueño", role: "owner" },
-      { id: "staff-cashier", name: "Cajero", role: "cashier" },
+      { id: "staff-cashier", name: "Caja", role: "cashier" },
       { id: "staff-waiter", name: "Mozo", role: "waiter" },
       { id: "staff-kitchen", name: "Cocina", role: "kitchen" },
       { id: "staff-delivery", name: "Repartidor", role: "delivery" },
