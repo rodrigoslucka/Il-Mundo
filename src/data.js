@@ -1,5 +1,19 @@
 export const STORAGE_KEY = "ilmundo.pizzeria.v1";
 
+export function normalizePizzaVariants(variants) {
+  if (!Array.isArray(variants)) return [];
+  return variants
+    .filter((variant) => {
+      if (!variant || typeof variant !== "object" || typeof variant.name !== "string") return false;
+      const name = variant.name.trim().toLowerCase();
+      return !["personal", "pequeña", "pequena", "pequeño", "pequeno", "small"].includes(name);
+    })
+    .map((variant) => ({
+      ...variant,
+      name: variant.name.trim().toLowerCase() === "mediana" ? "Media" : variant.name.trim(),
+    }));
+}
+
 export const ROLES = {
   owner: "Administrador",
   cashier: "Cajero",
@@ -35,10 +49,10 @@ export function createInitialState() {
       ],
     },
     menu: [
-      { id: "pizza-margarita", name: "Margarita", category: "Pizzas", active: true, variants: [{ name: "Personal", price: 8 }, { name: "Mediana", price: 13 }, { name: "Grande", price: 17 }] },
-      { id: "pizza-pepperoni", name: "Pepperoni", category: "Pizzas", active: true, variants: [{ name: "Personal", price: 9 }, { name: "Mediana", price: 14 }, { name: "Grande", price: 19 }] },
-      { id: "pizza-cuatro-quesos", name: "Cuatro quesos", category: "Pizzas", active: true, variants: [{ name: "Personal", price: 10 }, { name: "Mediana", price: 15 }, { name: "Grande", price: 20 }] },
-      { id: "pizza-vegetariana", name: "Vegetariana", category: "Pizzas", active: true, variants: [{ name: "Personal", price: 9 }, { name: "Mediana", price: 14 }, { name: "Grande", price: 18 }] },
+      { id: "pizza-margarita", name: "Margarita", category: "Pizzas", active: true, variants: [{ name: "Media", price: 13 }, { name: "Grande", price: 17 }] },
+      { id: "pizza-pepperoni", name: "Pepperoni", category: "Pizzas", active: true, variants: [{ name: "Media", price: 14 }, { name: "Grande", price: 19 }] },
+      { id: "pizza-cuatro-quesos", name: "Cuatro quesos", category: "Pizzas", active: true, variants: [{ name: "Media", price: 15 }, { name: "Grande", price: 20 }] },
+      { id: "pizza-vegetariana", name: "Vegetariana", category: "Pizzas", active: true, variants: [{ name: "Media", price: 14 }, { name: "Grande", price: 18 }] },
       { id: "bebida-cola", name: "Gaseosa de cola", category: "Bebidas", active: true, variants: [{ name: "Lata", price: 2.5 }, { name: "1,5 L", price: 5 }] },
       { id: "bebida-agua", name: "Agua mineral", category: "Bebidas", active: true, variants: [{ name: "500 ml", price: 1.5 }] },
       { id: "bebida-limonada", name: "Limonada", category: "Bebidas", active: true, variants: [{ name: "Vaso", price: 3 }] },
@@ -96,6 +110,9 @@ export function validateState(value) {
     ? value.settings.menuCategories.filter((category) => typeof category === "string" && category.trim())
     : [];
   for (const product of value.menu) {
+    if (product && typeof product === "object" && product.category === "Pizzas") {
+      product.variants = normalizePizzaVariants(product.variants);
+    }
     if (typeof product.category === "string" && product.category.trim() && !menuCategories.includes(product.category)) {
       menuCategories.push(product.category);
     }

@@ -9,6 +9,7 @@ import {
   STORAGE_KEY,
   todayKey,
   validateState,
+  normalizePizzaVariants,
 } from "./data.js?v=11";
 import {
   getWorkspaceProfile,
@@ -80,6 +81,7 @@ let loadingUserId = "";
 let loginMessage = "";
 let loginBusy = false;
 let passwordRecovery = false;
+let staffInvitations = [];
 const RETURN_SCREEN_KEY = "ilmundo.return-screen";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
@@ -175,11 +177,9 @@ function persist(mutator, successMessage) {
   }
   if (backendProfile) {
     if (backendSyncBlocked) {
-      notify("Actualiza el espacio compartido antes de seguir guardando.", "warning", 5000);
       return false;
     }
     if (!navigator.onLine) {
-      notify("Necesitas conexión para guardar cambios en el espacio compartido.", "warning", 5000);
       return false;
     }
     state = next;
@@ -206,7 +206,6 @@ function persist(mutator, successMessage) {
         console.error("No se pudo recuperar el estado compartido después del error.", refreshError);
       }
       render();
-      notify(`No se sincronizaron los cambios: ${error.message || "error de conexión"}. Actualiza los datos antes de continuar.`, "error", 7000);
     }).finally(() => {
       pendingBackendWrites = Math.max(0, pendingBackendWrites - 1);
     });
@@ -261,10 +260,6 @@ function navigationLink(item, mobile = false) {
   return `<a class="nav-link ${screen === item.id ? "active" : ""}" href="#${item.id}" data-nav="${item.id}" ${screen === item.id ? 'aria-current="page"' : ""}>${icon(item.icon)}<span>${esc(item.label)}</span>${badge}</a>`;
 }
 
-function banner() {
-  return `<div class="demo-banner">${icon("wifi")}<span><strong>Espacio compartido.</strong> Los pedidos y el menú se sincronizan entre los dispositivos conectados. La caja está disponible para administradores y el rol Caja.</span></div>`;
-}
-
 function renderModalLayer() {
   if (!modal) return "";
   const content = modal.content();
@@ -283,7 +278,6 @@ function frame(pageContent) {
   const settingsTitle = settingsTab === "users" ? "Usuarios y roles" : "Menú";
   const title = OPERATING_MODES.find((item) => item.id === screen)?.label
     || (["settings", "menu", "team"].includes(screen) ? settingsTitle : state.settings.businessName);
-  const online = navigator.onLine;
   const compactCash = screen === "orders";
   const cashAction = compactCash && (isAdmin() || hasActiveRole("cashier"))
     ? button("navigate:cash", "Caja", { kind: "soft", icon: "wallet", extra: "small-button cash-header-action" })
@@ -297,24 +291,18 @@ function frame(pageContent) {
       <div class="nav-label">MODOS</div>
       <nav class="nav-list" aria-label="Modos de trabajo">${navItems.map((item) => navigationLink(item)).join("")}</nav>
       <div class="sidebar-spacer"></div>
-      <div class="offline-card">
-        <strong><span class="online-dot"></span> ${online ? "Sincronización en línea" : "Sin conexión"}</strong>
-        <p>${online ? "Los cambios se guardan en el espacio compartido." : "No podrás guardar ni sincronizar cambios sin conexión."}</p>
-      </div>
     </aside>
     <main class="main-area">
       <header class="topbar ${compactCash ? "cash-topbar" : ""}">
         ${compactCash
           ? `<time class="cash-date">${businessDate()}</time>`
           : `<div class="topbar-title"><strong>${esc(title)}</strong><span>${esc(state.settings.businessName)} · ${businessDate()}</span></div>`}
-        <div class="topbar-actions">        ${compactCash ? cashAction : `<span class="clock" id="clock"></span><span class="connection-pill"><span class="online-dot"></span>${online ? "En línea" : "Sin conexión"}</span>`}
-          ${backendSyncBlocked ? `<button class="button soft small-button" type="button" data-action="refresh-workspace">Actualizar</button>` : ""}
+        <div class="topbar-actions">${compactCash ? cashAction : `<span class="clock" id="clock"></span>`}
           ${isAdmin() ? `<button class="icon-button" type="button" data-action="navigate:settings" title="Configuración" aria-label="Configuración">${icon("settings")}</button>` : ""}
           <button class="icon-button" type="button" data-action="sign-out" title="Cerrar sesión" aria-label="Cerrar sesión">${icon("logout")}</button>
           ${installPrompt ? '<button class="button primary small-button" type="button" data-action="install-pwa">Instalar</button>' : ""}
         </div>
       </header>
-      ${compactCash ? "" : banner()}
       <section class="page-content">${pageContent}</section>
     </main>
     <nav class="mobile-menu" aria-label="Navegación principal">${navItems.map((item) => navigationLink(item, true)).join("")}</nav>
@@ -543,10 +531,18 @@ function renderTeam() {
   if (!isAdmin()) return `${pageHeading("CUENTAS", "Acceso restringido", "Solo el administrador puede administrar las cuentas.")}`;
   const members = state.team.filter((member) => teamFilter === "all" || memberRoleGroup(member.role) === teamFilter);
   const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["cashier", "Caja"], ["worker", "Trabajadores"]];
+  const invitationCards = staffInvitations.map((invitation) => `
+    <article class="role-card">
+      <span class="avatar">${esc(initials(invitation.name))}</span>
+      <span class="role-card-main"><strong>${esc(invitation.name)}</strong><span>${esc(invitation.email)} · Invitación pendiente</span></span>
+      <span class="badge preparing">${esc(invitation.role === "admin" ? "Administrador" : invitation.role === "cashier" ? "Caja" : "Trabajador")}</span>
+      <button class="button soft small-button" type="button" data-action="resend-invitation:${esc(invitation.id)}" title="Reenviar invitación">Reenviar</button>
+      <button class="icon-button" type="button" data-action="cancel-invitation:${esc(invitation.id)}" aria-label="Cancelar invitación de ${esc(invitation.name)}">${icon("close")}</button>
+    </article>`).join("");
   return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Invita por correo y administra los permisos de las cuentas.", button("add-member", "Invitar usuario", { kind: "primary", icon: "plus" }))}
     <div class="filter-bar">${roleFilter.map(([id, label]) => `<button class="filter-chip ${teamFilter === id ? "selected" : ""}" type="button" data-action="filter-team:${esc(id)}">${esc(label)}</button>`).join("")}</div>
-    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta autenticada"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>
-    <div class="notice" style="margin-top:16px">${icon("alert")}<span>Los permisos también se validan en Supabase. Las invitaciones dependen de que el correo saliente del proyecto esté configurado.</span></div>`;
+    ${invitationCards ? `<section class="panel" style="margin:16px 0"><div class="panel-title"><h2>Invitaciones pendientes</h2></div><div class="two-column">${invitationCards}</div></section>` : ""}
+    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta activa"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Trabajador</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>`;
 }
 
 function renderSettings() {
@@ -575,13 +571,15 @@ function orderCartTotal() {
 }
 
 function selectableVariants(product) {
-  return product.variants;
+  return product.category === "Pizzas"
+    ? normalizePizzaVariants(product.variants)
+    : product.variants;
 }
 
 function defaultOrderVariant(product) {
   const variants = selectableVariants(product);
   return product.category === "Pizzas"
-    ? variants.find((variant) => variant.name === "Mediana") || variants[0]
+    ? variants.find((variant) => variant.name === "Media") || variants[0]
     : variants[0];
 }
 
@@ -670,7 +668,7 @@ function productVariantRow(category, variant, index) {
     : index === 0 ? "Presentación principal" : `Presentación ${index + 1}`;
   const placeholder = isDrink
     ? index === 0 ? "Ej.: Unidad" : "Ej.: 1,5 L"
-    : ["Ej.: Personal", "Ej.: Mediana", "Ej.: Grande"][index] || "Ej.: Familiar";
+    : ["Ej.: Media", "Ej.: Grande"][index] || "Ej.: Familiar";
   return `<div class="product-variant-row" data-variant-row="${index}">
     <div class="form-field"><label for="variant-name-${index}">${label}</label><input id="variant-name-${index}" class="form-control" name="variantName${index + 1}" maxlength="30" ${index === 0 ? "required" : ""} placeholder="${placeholder}" value="${esc(variant?.name || "")}"></div>
     <div class="product-variant-price"><div class="form-field"><label for="variant-price-${index}">Precio</label><input id="variant-price-${index}" class="form-control" name="variantPrice${index + 1}" type="number" min="0.01" step="0.01" ${index === 0 ? "required" : ""} placeholder="0.00" value="${variant?.price ?? ""}"></div>
@@ -695,9 +693,12 @@ function renderProductVariantRows(form, variants, focusIndex = null) {
 function menuEditorForm(product, selectedCategory = "Pizzas") {
   const category = product?.category || selectedCategory;
   const categories = ["Pizzas", "Bebidas"];
+  const existingPizzaVariants = normalizePizzaVariants(product?.variants);
   const variants = category === "Bebidas"
     ? product?.variants || [{ name: "Unidad", price: "" }]
-    : product?.variants || [{ name: "Personal", price: "" }, { name: "Mediana", price: "" }, { name: "Grande", price: "" }];
+    : existingPizzaVariants.length
+      ? existingPizzaVariants
+      : [{ name: "Media", price: "" }, { name: "Grande", price: "" }];
   return `<form id="product-form" data-form="product">
     <input type="hidden" name="id" value="${esc(product?.id || "")}">
     <div class="form-stack">
@@ -1016,15 +1017,17 @@ function addMenuProduct(formData) {
     variants.push({ name: variantName, price });
   }
   if (!variants.length) return notify("Agrega al menos una variante con un precio válido.", "warning");
+  const finalVariants = category === "Pizzas" ? normalizePizzaVariants(variants) : variants;
+  if (!finalVariants.length) return notify("Las pizzas deben tener tamaño Media o Grande.", "warning");
   const duplicate = state.menu.some((product) => product.name.toLowerCase() === name.toLowerCase() && product.id !== id);
   if (duplicate) return notify("Ya existe un producto con ese nombre.", "warning");
   if (persist((next) => {
     if (id) {
       const target = next.menu.find((product) => product.id === id);
       if (!target) throw new Error("El producto fue eliminado. Actualiza el menú e inténtalo de nuevo.");
-      Object.assign(target, { name, category, variants, active: true });
+      Object.assign(target, { name, category, variants: finalVariants, active: true });
     } else {
-      next.menu.push({ id: localId("item"), name, category, variants, active: true });
+      next.menu.push({ id: localId("item"), name, category, variants: finalVariants, active: true });
     }
   }, `Se guardó ${name} en el menú.`)) closeModal();
 }
@@ -1079,8 +1082,11 @@ function handleChange(event) {
     const form = target.form;
     if (!form) return;
     const variants = productVariantsFromForm(form);
-    if (target.value === "Bebidas" && variants[0]?.name === "Personal") variants[0].name = "Unidad";
-    if (target.value === "Pizzas" && variants[0]?.name === "Unidad") variants[0].name = "Personal";
+    if (target.value === "Bebidas" && ["Media", "Mediana"].includes(variants[0]?.name)) variants[0].name = "Unidad";
+    if (target.value === "Pizzas" && variants[0]?.name === "Unidad") {
+      variants[0].name = "Media";
+      if (!variants.some((variant) => variant.name === "Grande")) variants.push({ name: "Grande", price: "" });
+    }
     renderProductVariantRows(form, variants);
   }
 }
@@ -1154,10 +1160,19 @@ async function submitForm(event) {
   if (form.dataset.form === "password-update") {
     event.preventDefault();
     if (!form.reportValidity() || loginBusy) return;
+    const password = String(data.get("password") || "");
+    const confirmPassword = String(data.get("confirmPassword") || "");
+    if (password !== confirmPassword) {
+      loginMessage = "Las contraseñas no coinciden.";
+      renderLogin();
+      document.querySelector("#confirm-password")?.focus();
+      return;
+    }
     loginBusy = true;
     try {
-      await updatePassword(String(data.get("password") || ""));
+      await updatePassword(password);
       passwordRecovery = false;
+      history.replaceState(null, "", `${location.pathname}${location.hash.startsWith("#") && !location.hash.includes("access_token") ? location.hash : "#orders"}`);
       loginMessage = "Contraseña actualizada.";
       const { data: userData } = await supabase.auth.getUser();
       if (userData.user) await startAuthenticatedApp(userData.user);
@@ -1252,7 +1267,47 @@ async function refreshCurrentWorkspace() {
   backendRevision = latest.revision;
   state = validateState(latest.state);
   backendSyncBlocked = false;
+  await refreshStaffInvitations();
   render();
+}
+
+async function refreshStaffInvitations() {
+  if (!isAdmin()) {
+    staffInvitations = [];
+    return;
+  }
+  try {
+    const result = await inviteOrManageStaff("list");
+    staffInvitations = Array.isArray(result.invitations) ? result.invitations : [];
+  } catch (error) {
+    console.error("No se pudo consultar el estado de las invitaciones.", error);
+    staffInvitations = [];
+  }
+}
+
+async function resendStaffInvitation(invitation) {
+  try {
+    await inviteOrManageStaff("resend", { userId: invitation.id });
+    notify(`Invitación reenviada a ${invitation.email}.`);
+    await refreshStaffInvitations();
+    render();
+  } catch (error) {
+    console.error("No se pudo reenviar la invitación.", error);
+    notify(`No se pudo reenviar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
+  }
+}
+
+async function cancelStaffInvitation(invitationId) {
+  try {
+    await inviteOrManageStaff("cancel", { userId: invitationId });
+    closeModal();
+    notify("Se canceló la invitación pendiente.");
+    await refreshStaffInvitations();
+    render();
+  } catch (error) {
+    console.error("No se pudo cancelar la invitación.", error);
+    notify(`No se pudo cancelar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
+  }
 }
 
 async function changeStaffRole(member, role, control) {
@@ -1473,15 +1528,15 @@ function render() {
 function renderLogin() {
   if (passwordRecovery) {
     app.innerHTML = `<main class="auth-page"><section class="auth-card">
-      <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+      <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong></div></div>
       <h1>Crear contraseña nueva</h1>
       ${loginMessage ? `<div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(loginMessage)}</span></div>` : ""}
-      <form data-form="password-update"><div class="form-field"><label for="new-password">Nueva contraseña</label><input id="new-password" class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><button class="button primary auth-submit" type="submit" ${loginBusy ? "disabled" : ""}>Guardar contraseña</button></form>
+      <form data-form="password-update"><div class="form-field"><label for="new-password">Nueva contraseña</label><input id="new-password" class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><div class="form-field"><label for="confirm-password">Confirmar contraseña</label><input id="confirm-password" class="form-control" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><button class="button primary auth-submit" type="submit" ${loginBusy ? "disabled" : ""}>Guardar contraseña</button></form>
     </section></main>`;
     return;
   }
   app.innerHTML = `<main class="auth-page"><section class="auth-card">
-    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong></div></div>
     <h1>Iniciar sesión</h1>
     <p>Accede con la cuenta que te invitó el administrador.</p>
     ${loginMessage ? `<div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(loginMessage)}</span></div>` : ""}
@@ -1498,10 +1553,9 @@ function renderLogin() {
 
 function renderWorkspaceError(error) {
   app.innerHTML = `<main class="auth-page"><section class="auth-card">
-    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong><span>Gestión compartida</span></div></div>
+    <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong></div></div>
     <h1>No se pudo cargar tu espacio</h1>
     <div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(error.message || "Error inesperado al cargar los datos.")}</span></div>
-    <p>Tu sesión sigue activa. Comprueba tu conexión e inténtalo de nuevo.</p>
     <button class="button primary auth-submit" type="button" data-action="retry-workspace">Intentar de nuevo</button>
     <button class="auth-link" type="button" data-action="sign-out">Cerrar sesión</button>
   </section></main>`;
@@ -1526,6 +1580,7 @@ async function startAuthenticatedApp(user) {
     backendRevision = workspace.revision;
     state = validateState(workspace.state);
     loginMessage = "";
+    await refreshStaffInvitations();
     const requestedScreen = getRequestedScreen();
     const defaultScreen = allowedScreen("orders") ? "orders" : "kitchen";
     screen = allowedScreen(requestedScreen) ? requestedScreen : defaultScreen;
@@ -1543,13 +1598,11 @@ async function startAuthenticatedApp(user) {
         announceOrdersCreated(validateState(latest.state));
       } catch (error) {
         console.error("No se pudo actualizar el espacio compartido.", error);
-        notify(`No se pudo actualizar la información compartida: ${error.message}.`, "error", 6500);
         if (/rol de la cuenta|perfil/i.test(error.message)) void signOut();
       }
     }, (status) => {
       if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
         console.error("El canal de sincronización de Supabase perdió la conexión.", status);
-        notify("Se perdió la sincronización en tiempo real. Comprueba tu conexión.", "warning", 5000);
       }
     });
   } catch (error) {
@@ -1705,7 +1758,7 @@ function actionClicked(action) {
       return;
     }
     case "refresh-workspace":
-      refreshCurrentWorkspace().then(() => notify("Datos compartidos actualizados.")).catch((error) => {
+      refreshCurrentWorkspace().catch((error) => {
         console.error("No se pudo actualizar el espacio compartido.", error);
         notify(`No se pudo actualizar: ${error.message || "error inesperado"}.`, "error", 6500);
       });
@@ -1890,6 +1943,25 @@ function actionClicked(action) {
       return;
     case "remove-member":
       return removeMember(value);
+    case "resend-invitation": {
+      if (!isAdmin()) return notify("Solo el administrador puede reenviar invitaciones.", "error");
+      const invitation = staffInvitations.find((item) => item.id === value);
+      if (!invitation) return notify("La invitación ya no está disponible.", "warning");
+      void resendStaffInvitation(invitation);
+      return;
+    }
+    case "cancel-invitation": {
+      if (!isAdmin()) return notify("Solo el administrador puede cancelar invitaciones.", "error");
+      const invitation = staffInvitations.find((item) => item.id === value);
+      if (!invitation) return notify("La invitación ya no está disponible.", "warning");
+      openModal("confirm", {
+        title: "Cancelar invitación",
+        description: `Se cancelará la invitación enviada a «${invitation.email}».`,
+        label: "Cancelar invitación",
+        action: `cancel-invitation:${invitation.id}`,
+      });
+      return;
+    }
     case "add-courier":
       return;
     case "export-data":
@@ -1926,6 +1998,12 @@ function actionClicked(action) {
     case "confirm": {
       if (value === "reset-demo") return resetDemo();
       if (value === "recover-demo") return resetDemo();
+      if (value.startsWith("cancel-invitation:")) {
+        if (!isAdmin()) return notify("Solo el administrador puede cancelar invitaciones.", "error");
+        const invitationId = value.slice("cancel-invitation:".length);
+        void cancelStaffInvitation(invitationId);
+        return;
+      }
       if (value.startsWith("remove-member:")) {
         const memberId = value.slice("remove-member:".length);
         void deleteStaffAccount(memberId);
@@ -2076,7 +2154,6 @@ function installEventHandlers() {
 
   window.addEventListener("online", () => {
     render();
-    notify("Hay conexión a internet, pero esta demostración sigue funcionando en modo local.", "warning", 4500);
   });
   window.addEventListener("offline", render);
 
@@ -2100,14 +2177,26 @@ async function registerServiceWorker() {
     await navigator.serviceWorker.register("./sw.js");
   } catch (error) {
     console.error("No se pudo registrar el almacenamiento local de la aplicación.", error);
-    notify("No se pudo preparar el modo sin conexión. Comprueba que el servidor esté bien configurado.", "warning", 6000);
   }
+}
+
+function isPasswordSetupLink() {
+  const search = new URLSearchParams(location.search);
+  const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+  const type = search.get("type") || hash.get("type");
+  return type === "invite" || type === "recovery";
 }
 
 function startApp() {
   installEventHandlers();
   const applyAuthChange = (event, session) => {
     if (event === "INITIAL_SESSION") {
+      if (session?.user && isPasswordSetupLink()) {
+        passwordRecovery = true;
+        loginMessage = "";
+        renderLogin();
+        return;
+      }
       if (session?.user) void startAuthenticatedApp(session.user);
       else renderLogin();
       return;
@@ -2119,6 +2208,12 @@ function startApp() {
       return;
     }
     if (session?.user) {
+      if (isPasswordSetupLink()) {
+        passwordRecovery = true;
+        loginMessage = "";
+        renderLogin();
+        return;
+      }
       if (authenticatedUser?.id === session.user.id && state) return;
       void startAuthenticatedApp(session.user);
     } else if (event === "SIGNED_OUT") {
