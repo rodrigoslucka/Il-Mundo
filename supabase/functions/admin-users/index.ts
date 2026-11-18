@@ -38,7 +38,7 @@ Deno.serve(async (request) => {
     .single();
   if (actorError || actor?.role !== "admin") return respond({ error: "Solo un administrador puede gestionar cuentas." }, 403);
 
-  let body: { action?: string; email?: string; name?: string; role?: string; userId?: string };
+  let body: { action?: string; email?: string; name?: string; password?: string; role?: string; userId?: string };
   try {
     body = await request.json();
   } catch {
@@ -51,7 +51,7 @@ Deno.serve(async (request) => {
     const pending = users.filter((user) =>
       Boolean(user.invited_at) && !user.email_confirmed_at
     );
-    if (!pending.length) return respond({ invitations: [] });
+    if (!pending.length) return respond({ pendingAccounts: [] });
 
     const pendingIds = pending.map((user) => user.id);
     const { data: profiles, error: profilesError } = await serviceClient
@@ -61,7 +61,7 @@ Deno.serve(async (request) => {
     if (profilesError) return respond({ error: profilesError.message }, 400);
     const profilesById = new Map((profiles || []).map((profile) => [profile.user_id, profile]));
     return respond({
-      invitations: pending.map((user) => {
+      pendingAccounts: pending.map((user) => {
         const profile = profilesById.get(user.id);
         return {
           id: user.id,
@@ -74,31 +74,24 @@ Deno.serve(async (request) => {
     });
   }
 
-  if (body.action === "invite") {
+  if (body.action === "create") {
     const email = String(body.email || "").trim().toLowerCase();
     const name = String(body.name || "").trim();
+    const password = String(body.password || "");
     const role = body.role;
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || !name || name.length > 60 || !["admin", "cashier", "worker"].includes(role || "")) {
-      return respond({ error: "Revisa el correo, el nombre y el rol." }, 400);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || !name || name.length > 60 || password.length < 8 || password.length > 128 || !["admin", "cashier", "worker"].includes(role || "")) {
+      return respond({ error: "Revisa el correo, el nombre, la contraseña y el rol." }, 400);
     }
     const existingUsers = await listAllUsers(serviceClient);
     if (!existingUsers) return respond({ error: "No se pudo comprobar si el correo ya tiene una cuenta." }, 400);
     const existing = existingUsers.find((user) => String(user.email || "").trim().toLowerCase() === email);
-    if (existing?.email_confirmed_at) return respond({ error: "Ya existe una cuenta activa con ese correo." }, 409);
-    if (existing?.invited_at) {
-      const { error: profileError } = await serviceClient
-        .from("il_mundo_profiles")
-        .update({ display_name: name, role })
-        .eq("user_id", existing.id);
-      if (profileError) return respond({ error: "No se pudo actualizar la invitación pendiente." }, 500);
-      const { error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-        data: { display_name: name },
-      });
-      if (error) return respond({ error: error.message }, 400);
-      return respond({ invited: true, pending: true });
-    }
-    const { data, error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-      data: { display_name: name },
+    if (existing) return respond({ error: "Ya existe una cuenta con ese correo. Cámbiale la contraseña desde el panel." }, 409);
+    const { data, error } = await serviceClient.auth.admin.createUser({
+      email,
+      password,
+      email_confirm: true,
+      app_metadata: { il_mundo_admin_created: true },
+      user_metadata: { display_name: name },
     });
     if (error) return respond({ error: error.message }, 400);
     const { error: profileError } = await serviceClient
@@ -106,39 +99,28 @@ Deno.serve(async (request) => {
       .update({ display_name: name, role })
       .eq("user_id", data.user.id);
     if (profileError) {
-      console.error("Se creó la invitación pero no se pudo asignar el rol.", profileError);
-      await serviceClient.auth.admin.deleteUser(data.user.id);
-      return respond({ error: "No se pudo activar el perfil de la invitación. Inténtalo de nuevo desde el panel." }, 500);
+      console.error("Se creó la cuenta pero no se pudo asignar el rol.", profileError);
+      const { error: rollbackError } = await serviceClient.auth.admin.deleteUser(data.user.id);
+      if (rollbackError) console.error("No se pudo revertir la cuenta creada.", rollbackError);
+      return respond({ error: "No se pudo guardar el perfil de la cuenta. Inténtalo de nuevo desde el panel." }, 500);
     }
-    return respond({ invited: true });
+    return respond({ created: true });
   }
 
-  if (body.action === "resend") {
-    if (!body.userId) return respond({ error: "Selecciona la invitación que quieres reenviar." }, 400);
-    const { data, error: targetError } = await serviceClient.auth.admin.getUserById(body.userId);
-    if (targetError || !data.user) return respond({ error: "No se encontró la invitación." }, 404);
-    if (!data.user.invited_at || data.user.email_confirmed_at) {
-      return respond({ error: "Solo se pueden reenviar invitaciones pendientes." }, 400);
+  if (body.action === "set-password") {
+    const userId = String(body.userId || "");
+    const password = String(body.password || "");
+    if (!userId || password.length < 8 || password.length > 128) {
+      return respond({ error: "Selecciona una cuenta y una contraseña de entre 8 y 128 caracteres." }, 400);
     }
-    const email = String(data.user.email || "").trim().toLowerCase();
-    if (!email) return respond({ error: "La invitación no tiene correo asociado." }, 400);
-    const { error } = await serviceClient.auth.admin.inviteUserByEmail(email, {
-      data: { display_name: data.user.user_metadata?.display_name || email },
+    const { data: target, error: targetError } = await serviceClient.auth.admin.getUserById(userId);
+    if (targetError || !target.user) return respond({ error: "No se encontró la cuenta." }, 404);
+    const { error } = await serviceClient.auth.admin.updateUserById(userId, {
+      password,
+      email_confirm: true,
     });
     if (error) return respond({ error: error.message }, 400);
-    return respond({ resent: true });
-  }
-
-  if (body.action === "cancel") {
-    if (!body.userId) return respond({ error: "Selecciona la invitación que quieres cancelar." }, 400);
-    const { data, error } = await serviceClient.auth.admin.getUserById(body.userId);
-    if (error || !data.user) return respond({ error: "No se encontró la invitación." }, 404);
-    if (!data.user.invited_at || data.user.email_confirmed_at) {
-      return respond({ error: "Solo se pueden cancelar invitaciones pendientes." }, 400);
-    }
-    const { error: deleteError } = await serviceClient.auth.admin.deleteUser(body.userId);
-    if (deleteError) return respond({ error: deleteError.message }, 400);
-    return respond({ cancelled: true });
+    return respond({ updated: true });
   }
 
   if (body.action === "role") {

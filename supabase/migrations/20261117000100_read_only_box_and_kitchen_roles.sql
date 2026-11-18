@@ -32,7 +32,12 @@ declare
   v_old_order jsonb;
   v_sessions jsonb;
   v_new_orders jsonb := '[]'::jsonb;
+  v_state_orders jsonb;
+  v_order_index integer;
+  v_now timestamptz := clock_timestamp();
+  v_business_date text;
 begin
+  v_business_date := (v_now at time zone 'America/La_Paz')::date::text;
   select s.data, s.revision
   into v_current, v_revision
   from public.il_mundo_state s
@@ -73,8 +78,10 @@ begin
       end if;
     end loop;
 
-    for v_order in
-      select value from jsonb_array_elements(p_state -> 'orders')
+    v_state_orders := p_state -> 'orders';
+    for v_order, v_order_index in
+      select value, (ordinality - 1)::integer
+      from jsonb_array_elements(v_state_orders) with ordinality
     loop
       if not exists (
         select 1
@@ -84,9 +91,18 @@ begin
         if not public.il_mundo_order_is_valid(v_order, v_current, (select auth.uid())) then
           raise exception 'El nuevo pedido no cumple los requisitos de creación.';
         end if;
+        if coalesce(v_order ->> 'deliveryPersonId', '') <> '' then
+          raise exception 'Caja no puede asignar repartidores a los pedidos.';
+        end if;
+        v_order := jsonb_set(v_order, '{date}', to_jsonb(v_business_date), true);
+        v_order := jsonb_set(v_order, '{createdAt}', to_jsonb(v_now), true);
+        v_order := jsonb_set(v_order, '{createdBy}', to_jsonb((select auth.uid())::text), true);
+        v_order := jsonb_set(v_order, '{payment,paidAt}', to_jsonb(v_now), true);
+        v_state_orders := jsonb_set(v_state_orders, array[v_order_index::text], v_order, true);
         v_new_orders := v_new_orders || jsonb_build_array(v_order);
       end if;
     end loop;
+    p_state := jsonb_set(p_state, '{orders}', v_state_orders, true);
 
     if exists (
       select 1
