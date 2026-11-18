@@ -137,13 +137,6 @@ export async function signOut() {
   throwIfError(error, "Cerrar sesión");
 }
 
-export async function requestPasswordReset(email) {
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${location.origin}${location.pathname}`,
-  });
-  throwIfError(error, "Solicitar el restablecimiento de contraseña");
-}
-
 export async function updatePassword(password) {
   const { error } = await supabase.auth.updateUser({ password });
   throwIfError(error, "Actualizar la contraseña");

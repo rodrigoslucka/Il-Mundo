@@ -16,7 +16,6 @@ import {
   inviteOrManageStaff,
   loadWorkspace,
   refreshWorkspace,
-  requestPasswordReset,
   saveWorkspace,
   signIn,
   signOut,
@@ -81,7 +80,7 @@ let loadingUserId = "";
 let loginMessage = "";
 let loginBusy = false;
 let passwordRecovery = false;
-let staffInvitations = [];
+let pendingStaffAccounts = [];
 const RETURN_SCREEN_KEY = "ilmundo.return-screen";
 let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.enabled") === "true";
 const OPERATING_MODES = [
@@ -537,20 +536,20 @@ function pricePills(product) {
 
 function renderTeam() {
   if (!isAdmin()) return `${pageHeading("CUENTAS", "Acceso restringido", "Solo el administrador puede administrar las cuentas.")}`;
-  const members = state.team.filter((member) => teamFilter === "all" || memberRoleGroup(member.role) === teamFilter);
+  const pendingIds = new Set(pendingStaffAccounts.map((account) => account.id));
+  const members = state.team.filter((member) => !pendingIds.has(member.id) && (teamFilter === "all" || memberRoleGroup(member.role) === teamFilter));
   const roleFilter = [["all", "Todos"], ["admin", "Administradores"], ["cashier", "Caja"], ["worker", "Cocina"]];
-  const invitationCards = staffInvitations.map((invitation) => `
+  const pendingCards = pendingStaffAccounts.map((account) => `
     <article class="role-card">
-      <span class="avatar">${esc(initials(invitation.name))}</span>
-      <span class="role-card-main"><strong>${esc(invitation.name)}</strong><span>${esc(invitation.email)} · Invitación pendiente</span></span>
-      <span class="badge preparing">${esc(invitation.role === "admin" ? "Administrador" : invitation.role === "cashier" ? "Caja" : "Cocina")}</span>
-      <button class="button soft small-button" type="button" data-action="resend-invitation:${esc(invitation.id)}" title="Reenviar invitación">Reenviar</button>
-      <button class="icon-button" type="button" data-action="cancel-invitation:${esc(invitation.id)}" aria-label="Cancelar invitación de ${esc(invitation.name)}">${icon("close")}</button>
+      <span class="avatar">${esc(initials(account.name))}</span>
+      <span class="role-card-main"><strong>${esc(account.name)}</strong><span>${esc(account.email)} · Pendiente de activar</span></span>
+      <span class="badge preparing">${esc(account.role === "admin" ? "Administrador" : account.role === "cashier" ? "Caja" : "Cocina")}</span>
+      <button class="button soft small-button" type="button" data-action="set-member-password:${esc(account.id)}">Definir contraseña</button>
     </article>`).join("");
-  return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Invita por correo y administra los permisos de las cuentas.", button("add-member", "Invitar usuario", { kind: "primary", icon: "plus" }))}
+  return `${pageHeading("CONFIGURACIÓN", "Usuarios y roles", "Crea cuentas y administra sus permisos desde el panel.", button("add-member", "Crear usuario", { kind: "primary", icon: "plus" }))}
     <div class="filter-bar">${roleFilter.map(([id, label]) => `<button class="filter-chip ${teamFilter === id ? "selected" : ""}" type="button" data-action="filter-team:${esc(id)}">${esc(label)}</button>`).join("")}</div>
-    ${invitationCards ? `<section class="panel" style="margin:16px 0"><div class="panel-title"><h2>Invitaciones pendientes</h2></div><div class="two-column">${invitationCards}</div></section>` : ""}
-    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta activa"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Cocina</option></select>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>`}</div>`;
+    ${pendingCards ? `<section class="panel" style="margin:16px 0"><div class="panel-title"><h2>Cuentas pendientes de activar</h2></div><div class="two-column">${pendingCards}</div></section>` : ""}
+    <div class="two-column">${members.map((member) => `<article class="role-card"><span class="avatar">${esc(initials(member.name))}</span><span class="role-card-main"><strong>${esc(member.name)}</strong><span>${member.id === state.activeMemberId ? "Sesión actual" : "Cuenta activa"}</span></span><select class="form-select account-role" data-member-role="${esc(member.id)}" aria-label="Tipo de cuenta de ${esc(member.name)}" ${member.id === state.activeMemberId ? "disabled" : ""}><option value="admin" ${memberRoleGroup(member.role) === "admin" ? "selected" : ""}>Administrador</option><option value="cashier" ${memberRoleGroup(member.role) === "cashier" ? "selected" : ""}>Caja</option><option value="worker" ${memberRoleGroup(member.role) === "worker" ? "selected" : ""}>Cocina</option></select><button class="button soft small-button" type="button" data-action="set-member-password:${esc(member.id)}">Cambiar contraseña</button>${member.id !== state.activeMemberId ? `<button class="icon-button" type="button" data-action="remove-member:${esc(member.id)}" aria-label="Eliminar cuenta ${esc(member.name)}">${icon("close")}</button>` : ""}</article>`).join("") || (!pendingCards ? `<div class="card">${emptyState("Sin cuentas en este filtro", "Elige otro tipo de cuenta.")}</div>` : "")}</div>`;
 }
 
 function renderSettings() {
@@ -738,7 +737,12 @@ function modalContent(current) {
       return { body: menuEditorForm(current.data.product, current.data.category), footer: "" };
     case "team-add":
       return {
-        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select class="form-select" id="member-role" name="role" required><option value="cashier">Caja</option><option value="worker">Cocina</option><option value="admin">Administrador</option></select></div><p class="small muted">Se enviará un enlace de invitación. El usuario definirá su contraseña al aceptar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Enviar invitación</button></div></form>`,
+        body: `<form id="member-form" data-form="member"><div class="form-stack"><div class="form-field"><label for="member-name">Nombre</label><input class="form-control" id="member-name" name="name" required maxlength="60" placeholder="Ej.: Alex"></div><div class="form-field"><label for="member-email">Correo electrónico</label><input class="form-control" id="member-email" name="email" type="email" autocomplete="email" required maxlength="254" placeholder="alex@correo.com"></div><div class="form-field"><label for="member-role">Tipo de cuenta</label><select id="member-role" class="form-select" name="role" required><option value="cashier">Caja</option><option value="worker">Cocina</option><option value="admin">Administrador</option></select></div><div class="form-field"><label for="member-password">Contraseña inicial</label><input id="member-password" class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><div class="form-field"><label for="member-confirm-password">Confirmar contraseña</label><input id="member-confirm-password" class="form-control" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><p class="small muted">La cuenta se crea activa sin enviar correos. Comparte las credenciales de forma segura.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Crear cuenta</button></div></form>`,
+        footer: "",
+      };
+    case "team-password":
+      return {
+        body: `<form data-form="team-password"><input type="hidden" name="userId" value="${esc(current.data.memberId)}"><div class="form-stack"><p class="small muted">Cuenta: ${esc(current.data.memberName)}</p><div class="form-field"><label for="team-new-password">Nueva contraseña</label><input id="team-new-password" class="form-control" name="password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><div class="form-field"><label for="team-confirm-password">Confirmar contraseña</label><input id="team-confirm-password" class="form-control" name="confirmPassword" type="password" autocomplete="new-password" minlength="8" maxlength="128" required></div><p class="small muted">Si la cuenta estaba pendiente, quedará activada al guardar.</p></div><div class="form-footer"><button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit">Guardar contraseña</button></div></form>`,
         footer: "",
       };
     case "assign-delivery":
@@ -1210,15 +1214,34 @@ async function submitForm(event) {
       const name = String(data.get("name") || "").trim();
       const email = String(data.get("email") || "").trim();
       const role = String(data.get("role") || "");
+      const password = String(data.get("password") || "");
+      const confirmPassword = String(data.get("confirmPassword") || "");
       if (!name || !email || !["admin", "cashier", "worker"].includes(role)) return notify("Completa el nombre, correo y tipo de cuenta.", "warning");
+      if (password !== confirmPassword) return notify("Las contraseñas no coinciden.", "warning");
       try {
-        await inviteOrManageStaff("invite", { name, email, role });
+        await inviteOrManageStaff("create", { name, email, role, password });
         closeModal();
-        notify(`Invitación enviada a ${email}.`);
+        notify(`Cuenta creada para ${email}.`);
         await refreshCurrentWorkspace();
       } catch (error) {
-        console.error("No se pudo enviar la invitación.", error);
-        notify(`No se pudo enviar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
+        console.error("No se pudo crear la cuenta.", error);
+        notify(`No se pudo crear la cuenta: ${error.message || "error inesperado"}.`, "error", 6500);
+      }
+      break;
+    }
+    case "team-password": {
+      const userId = String(data.get("userId") || "");
+      const password = String(data.get("password") || "");
+      const confirmPassword = String(data.get("confirmPassword") || "");
+      if (password !== confirmPassword) return notify("Las contraseñas no coinciden.", "warning");
+      try {
+        await inviteOrManageStaff("set-password", { userId, password });
+        closeModal();
+        notify("Contraseña actualizada. La cuenta está activa.");
+        await refreshCurrentWorkspace();
+      } catch (error) {
+        console.error("No se pudo actualizar la contraseña de la cuenta.", error);
+        notify(`No se pudo actualizar la contraseña: ${error.message || "error inesperado"}.`, "error", 6500);
       }
       break;
     }
@@ -1276,46 +1299,21 @@ async function refreshCurrentWorkspace() {
   backendRevision = latest.revision;
   state = validateState(latest.state);
   backendSyncBlocked = false;
-  await refreshStaffInvitations();
+  await refreshPendingStaffAccounts();
   render();
 }
 
-async function refreshStaffInvitations() {
+async function refreshPendingStaffAccounts() {
   if (!isAdmin()) {
-    staffInvitations = [];
+    pendingStaffAccounts = [];
     return;
   }
   try {
     const result = await inviteOrManageStaff("list");
-    staffInvitations = Array.isArray(result.invitations) ? result.invitations : [];
+    pendingStaffAccounts = Array.isArray(result.pendingAccounts) ? result.pendingAccounts : [];
   } catch (error) {
-    console.error("No se pudo consultar el estado de las invitaciones.", error);
-    staffInvitations = [];
-  }
-}
-
-async function resendStaffInvitation(invitation) {
-  try {
-    await inviteOrManageStaff("resend", { userId: invitation.id });
-    notify(`Invitación reenviada a ${invitation.email}.`);
-    await refreshStaffInvitations();
-    render();
-  } catch (error) {
-    console.error("No se pudo reenviar la invitación.", error);
-    notify(`No se pudo reenviar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
-  }
-}
-
-async function cancelStaffInvitation(invitationId) {
-  try {
-    await inviteOrManageStaff("cancel", { userId: invitationId });
-    closeModal();
-    notify("Se canceló la invitación pendiente.");
-    await refreshStaffInvitations();
-    render();
-  } catch (error) {
-    console.error("No se pudo cancelar la invitación.", error);
-    notify(`No se pudo cancelar la invitación: ${error.message || "error inesperado"}.`, "error", 6500);
+    console.error("No se pudo consultar el estado de las cuentas pendientes.", error);
+    pendingStaffAccounts = [];
   }
 }
 
@@ -1330,24 +1328,6 @@ async function changeStaffRole(member, role, control) {
     if (control.isConnected) control.value = memberRoleGroup(member.role);
     notify(`No se pudo cambiar el rol: ${error.message || "error inesperado"}.`, "error", 6500);
   }
-}
-
-async function handlePasswordReset() {
-  const email = String(document.querySelector("#login-email")?.value || "").trim();
-  if (!email) {
-    loginMessage = "Escribe tu correo para recibir el enlace de recuperación.";
-    renderLogin();
-    document.querySelector("#login-email")?.focus();
-    return;
-  }
-  try {
-    await requestPasswordReset(email);
-    loginMessage = "Si existe una cuenta con ese correo, recibirás un enlace para restablecer la contraseña.";
-  } catch (error) {
-    console.error("No se pudo solicitar el restablecimiento de contraseña.", error);
-    loginMessage = error.message || "No se pudo solicitar el restablecimiento.";
-  }
-  renderLogin();
 }
 
 async function deleteStaffAccount(memberId) {
@@ -1547,15 +1527,14 @@ function renderLogin() {
   app.innerHTML = `<main class="auth-page"><section class="auth-card">
     <div class="auth-brand"><span class="brand-mark"><img src="./assets/pizza.svg" alt="" /></span><div><strong>Il Mundo</strong></div></div>
     <h1>Iniciar sesión</h1>
-    <p>Accede con la cuenta que te invitó el administrador.</p>
+    <p>Accede con el correo y la contraseña que te dio el administrador.</p>
     ${loginMessage ? `<div class="notice danger-note" role="alert">${icon("alert")}<span>${esc(loginMessage)}</span></div>` : ""}
     <form data-form="login">
       <div class="form-field"><label for="login-email">Correo electrónico</label><input id="login-email" class="form-control" name="email" type="email" autocomplete="username" required maxlength="254" placeholder="nombre@correo.com"></div>
       <div class="form-field"><label for="login-password">Contraseña</label><input id="login-password" class="form-control" name="password" type="password" autocomplete="current-password" required minlength="8" maxlength="128"></div>
       <button class="button primary auth-submit" type="submit" ${loginBusy ? "disabled" : ""}>${loginBusy ? "Conectando…" : "Entrar"}</button>
-      <button class="auth-link" type="button" data-action="password-reset">Olvidé mi contraseña</button>
     </form>
-    <p class="small muted">Las cuentas se crean mediante invitación de un administrador.</p>
+    <p class="small muted">Si olvidaste tu contraseña, solicita al administrador que la cambie desde el panel.</p>
     ${authenticatedUser ? `<button class="auth-link" type="button" data-action="sign-out">Cerrar la sesión actual</button>` : ""}
   </section></main>`;
 }
@@ -1589,7 +1568,7 @@ async function startAuthenticatedApp(user) {
     backendRevision = workspace.revision;
     state = validateState(workspace.state);
     loginMessage = "";
-    await refreshStaffInvitations();
+    await refreshPendingStaffAccounts();
     const requestedScreen = getRequestedScreen();
     const defaultScreen = allowedScreen("orders") ? "orders" : "kitchen";
     screen = allowedScreen(requestedScreen) ? requestedScreen : defaultScreen;
@@ -1778,9 +1757,6 @@ function actionClicked(action) {
         notify(`No se pudo cerrar sesión: ${error.message || "error inesperado"}.`, "error");
       });
       return;
-    case "password-reset":
-      void handlePasswordReset();
-      return;
     case "close-modal":
       closeModal();
       return;
@@ -1952,22 +1928,16 @@ function actionClicked(action) {
       return;
     case "remove-member":
       return removeMember(value);
-    case "resend-invitation": {
-      if (!isAdmin()) return notify("Solo el administrador puede reenviar invitaciones.", "error");
-      const invitation = staffInvitations.find((item) => item.id === value);
-      if (!invitation) return notify("La invitación ya no está disponible.", "warning");
-      void resendStaffInvitation(invitation);
-      return;
-    }
-    case "cancel-invitation": {
-      if (!isAdmin()) return notify("Solo el administrador puede cancelar invitaciones.", "error");
-      const invitation = staffInvitations.find((item) => item.id === value);
-      if (!invitation) return notify("La invitación ya no está disponible.", "warning");
-      openModal("confirm", {
-        title: "Cancelar invitación",
-        description: `Se cancelará la invitación enviada a «${invitation.email}».`,
-        label: "Cancelar invitación",
-        action: `cancel-invitation:${invitation.id}`,
+    case "set-member-password": {
+      if (!isAdmin()) return notify("Solo el administrador puede cambiar contraseñas.", "error");
+      const member = state.team.find((item) => item.id === value)
+        || pendingStaffAccounts.find((item) => item.id === value);
+      if (!member) return notify("La cuenta ya no está disponible.", "warning");
+      openModal("team-password", {
+        title: "Cambiar contraseña",
+        description: "Define una nueva contraseña para esta cuenta.",
+        memberId: member.id,
+        memberName: member.name,
       });
       return;
     }
@@ -2007,12 +1977,6 @@ function actionClicked(action) {
     case "confirm": {
       if (value === "reset-demo") return resetDemo();
       if (value === "recover-demo") return resetDemo();
-      if (value.startsWith("cancel-invitation:")) {
-        if (!isAdmin()) return notify("Solo el administrador puede cancelar invitaciones.", "error");
-        const invitationId = value.slice("cancel-invitation:".length);
-        void cancelStaffInvitation(invitationId);
-        return;
-      }
       if (value.startsWith("remove-member:")) {
         const memberId = value.slice("remove-member:".length);
         void deleteStaffAccount(memberId);
