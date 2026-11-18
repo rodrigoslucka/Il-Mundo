@@ -119,8 +119,8 @@ export async function inviteOrManageStaff(action, details) {
 export function subscribeWorkspace(onChange, onStatus) {
   const channel = supabase
     .channel("il-mundo-workspace")
-    .on("postgres_changes", { event: "*", schema: "public", table: "il_mundo_state", filter: "id=eq.1" }, onChange)
-    .on("postgres_changes", { event: "*", schema: "public", table: "il_mundo_cash_state", filter: "id=eq.1" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "il_mundo_state" }, onChange)
+    .on("postgres_changes", { event: "*", schema: "public", table: "il_mundo_cash_state" }, onChange)
     .on("postgres_changes", { event: "*", schema: "public", table: "il_mundo_profiles" }, onChange)
     .subscribe(onStatus);
   return () => supabase.removeChannel(channel);
