@@ -75,6 +75,8 @@ let backendRevision = 0;
 let backendUnsubscribe = null;
 let backendWriteQueue = Promise.resolve();
 let pendingBackendWrites = 0;
+let backendRefreshInProgress = false;
+let backendRefreshQueued = false;
 let backendSyncBlocked = false;
 let loadingUserId = "";
 let loginMessage = "";
@@ -211,6 +213,7 @@ function persist(mutator, successMessage) {
       render();
     }).finally(() => {
       pendingBackendWrites = Math.max(0, pendingBackendWrites - 1);
+      if (pendingBackendWrites === 0 && backendRefreshQueued) void syncWorkspaceFromRealtime();
     });
     if (successMessage) notify(successMessage);
     return true;
@@ -1303,6 +1306,40 @@ async function refreshCurrentWorkspace() {
   render();
 }
 
+async function syncWorkspaceFromRealtime() {
+  if (!authenticatedUser || !backendProfile) return;
+  if (pendingBackendWrites > 0 || backendRefreshInProgress) {
+    backendRefreshQueued = true;
+    return;
+  }
+
+  backendRefreshInProgress = true;
+  try {
+    do {
+      backendRefreshQueued = false;
+      if (pendingBackendWrites > 0) {
+        backendRefreshQueued = true;
+        break;
+      }
+
+      const userId = authenticatedUser.id;
+      const role = backendProfile.role;
+      const latest = await refreshWorkspace(createInitialState(), userId, role);
+      if (authenticatedUser?.id !== userId || backendProfile?.role !== role) return;
+      if (latest.revision > backendRevision) {
+        backendRevision = latest.revision;
+        announceOrdersCreated(validateState(latest.state));
+      }
+    } while (backendRefreshQueued && pendingBackendWrites === 0);
+  } catch (error) {
+    console.error("No se pudo actualizar el espacio compartido.", error);
+    if (/rol de la cuenta|perfil/i.test(error.message || "")) void signOut();
+  } finally {
+    backendRefreshInProgress = false;
+    if (backendRefreshQueued && pendingBackendWrites === 0) void syncWorkspaceFromRealtime();
+  }
+}
+
 async function refreshPendingStaffAccounts() {
   if (!isAdmin()) {
     pendingStaffAccounts = [];
@@ -1577,22 +1614,17 @@ async function startAuthenticatedApp(user) {
     render();
     startClock();
     backendUnsubscribe?.();
-    backendUnsubscribe = subscribeWorkspace(async () => {
-      if (!backendProfile || !authenticatedUser || pendingBackendWrites > 0) return;
-      try {
-        const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
-        if (latest.revision <= backendRevision) return;
-        backendRevision = latest.revision;
-        announceOrdersCreated(validateState(latest.state));
-      } catch (error) {
-        console.error("No se pudo actualizar el espacio compartido.", error);
-        if (/rol de la cuenta|perfil/i.test(error.message)) void signOut();
-      }
-    }, (status) => {
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-        console.error("El canal de sincronización de Supabase perdió la conexión.", status);
-      }
-    });
+    backendUnsubscribe = subscribeWorkspace(
+      () => void syncWorkspaceFromRealtime(),
+      (status) => {
+        if (status === "SUBSCRIBED") {
+          void syncWorkspaceFromRealtime();
+        }
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error("El canal de sincronización de Supabase perdió la conexión.", status);
+        }
+      },
+    );
   } catch (error) {
     console.error("No se pudo cargar el espacio de trabajo.", error);
     if (authenticatedUser?.id !== user.id) return;
@@ -2127,8 +2159,12 @@ function installEventHandlers() {
 
   window.addEventListener("online", () => {
     render();
+    void syncWorkspaceFromRealtime();
   });
   window.addEventListener("offline", render);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void syncWorkspaceFromRealtime();
+  });
 
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
