@@ -111,7 +111,19 @@ export async function inviteOrManageStaff(action, details) {
   const { data, error } = await supabase.functions.invoke("admin-users", {
     body: { action, ...details },
   });
-  throwIfError(error, "Administrar las cuentas");
+  if (error) {
+    console.error("Administrar las cuentas falló en Supabase Functions.", error);
+    let responseMessage = "";
+    if (error.context instanceof Response) {
+      try {
+        const responseBody = await error.context.clone().json();
+        if (typeof responseBody?.error === "string") responseMessage = responseBody.error;
+      } catch (parseError) {
+        console.error("No se pudo leer el detalle del error de Supabase Functions.", parseError);
+      }
+    }
+    throw new Error(responseMessage || error.message || "No se pudo administrar las cuentas.");
+  }
   if (data?.error) throw new Error(data.error);
   return data;
 }
