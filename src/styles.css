@@ -596,11 +596,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 @media (max-width: 520px) {
+  body { min-width: 0; }
   .page-heading { flex-wrap: wrap; }
   .page-heading > div:first-child { flex: 1; }
   .heading-actions { align-self: flex-start; }
   .heading-actions .button { min-height: 35px; padding: 0 10px; font-size: 10px; }
   .heading-actions .button .icon { width: 16px; height: 16px; }
+  #settings-panel-users .role-card { flex-wrap: wrap; gap: 8px; }
+  #settings-panel-users .role-card-main { flex: 1 1 calc(100% - 52px); overflow-wrap: anywhere; }
+  #settings-panel-users .account-role { flex: 1 1 100%; width: 100%; }
+  #settings-panel-users .role-card > .button { flex: 1 1 auto; min-width: 0; }
+  #settings-panel-users .role-card > .icon-button { flex: 0 0 44px; }
+  #settings-panel-users .filter-bar { flex-wrap: wrap; overflow: visible; }
   .connection-pill { max-width: 115px; overflow: hidden; text-overflow: ellipsis; }
   .quick-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
   .quick-card { min-height: 74px; gap: 8px; padding: 9px; }
