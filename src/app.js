@@ -26,6 +26,7 @@ import {
 } from "./backend.js";
 import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
 import { renderCashPage } from "./features/cash/page.js";
+import { formatKitchenTicketItems } from "./features/kitchen/format-ticket-items.js";
 
 const app = document.querySelector("#app");
 installDiagnostics();
@@ -465,11 +466,14 @@ function kitchenTicket(order) {
   const serviceLabel = order.channel === "dinein" ? "En mesa" : "Para llevar";
   const ticketChannel = order.channel === "dinein" ? (order.tableName || serviceLabel) : serviceLabel;
   const orderLabel = `${orderDisplayId(order)} · ${ticketChannel}`;
+  const items = formatKitchenTicketItems(order.items)
+    .map((item) => `<span class="ticket-order-item">${esc(item)}</span>`)
+    .join("");
   return `<article class="kitchen-ticket ${orderStyle}">
     <button class="ticket-summary" type="button" data-action="view-kitchen-order:${esc(order.id)}" aria-label="Abrir ${esc(orderLabel)}">
       <span class="ticket-header"><strong>Pedido ${esc(orderDisplayId(order))}</strong><span class="ticket-age" title="${esc(formatTimestamp(order.createdAt))}">${esc(age)}</span></span>
       <span class="ticket-primary">
-        <strong>Nueva orden</strong>
+        <span class="ticket-order-items">${items}</span>
         <span class="ticket-location">${icon(order.channel === "delivery" ? "bike" : order.channel === "dinein" ? "table" : "store")}${esc(ticketChannel)}</span>
         ${order.channel === "delivery" ? `<span class="ticket-service-label">Delivery</span>` : ""}
       </span>
