@@ -18,6 +18,7 @@ import {
   inviteOrManageStaff,
   loadWorkspace,
   refreshWorkspace,
+  deleteReadyOrderFromWorkspace,
   saveWorkspace,
   signIn,
   signOut,
@@ -29,7 +30,7 @@ import {
 import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
 import { renderCashPage } from "./features/cash/page.js";
 import { formatKitchenTicketItems } from "./features/kitchen/format-ticket-items.js";
-import { closeReadyOrder, ORDER_PAYMENT_METHODS, paidOrders, sendEditedOrderToKitchen } from "./features/orders/workflow.js";
+import { closeReadyOrder, ORDER_PAYMENT_METHODS, paidOrders, removeReadyOrder, sendEditedOrderToKitchen } from "./features/orders/workflow.js";
 
 const app = document.querySelector("#app");
 installDiagnostics();
@@ -172,6 +173,35 @@ function notify(message, kind = "success", duration = 3200) {
   window.setTimeout(() => toast.remove(), duration);
 }
 
+function queueWorkspaceWrite(writeOperation, errorMessage) {
+  pendingBackendWrites += 1;
+  backendWriteQueue = backendWriteQueue.then(async () => {
+    if (!backendProfile || backendSyncBlocked) return;
+    const saved = await writeOperation(backendRevision, backendProfile.role);
+    backendRevision = saved.revision;
+  }).catch(async (error) => {
+    console.error(errorMessage, error);
+    notify(`${errorMessage} ${error.message || "Error inesperado."}`, "error", 6000);
+    backendSyncBlocked = true;
+    try {
+      if (authenticatedUser && backendProfile) {
+        const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
+        backendRevision = latest.revision;
+        state = validateState(latest.state);
+        modal = null;
+        draft = null;
+        render();
+      }
+    } catch (refreshError) {
+      console.error("No se pudo recuperar el estado compartido después del error.", refreshError);
+    }
+    render();
+  }).finally(() => {
+    pendingBackendWrites = Math.max(0, pendingBackendWrites - 1);
+    if (pendingBackendWrites === 0 && backendRefreshQueued) void syncWorkspaceFromRealtime();
+  });
+}
+
 function persist(mutator, successMessage, allowedRoles = ["owner", "cashier"]) {
   if (!hasActiveRole(...allowedRoles)) {
     notify("Este perfil no puede modificar esta información.", "error");
@@ -194,32 +224,11 @@ function persist(mutator, successMessage, allowedRoles = ["owner", "cashier"]) {
     }
     state = next;
     render();
-    pendingBackendWrites += 1;
     const snapshot = JSON.parse(JSON.stringify(next));
-    backendWriteQueue = backendWriteQueue.then(async () => {
-      if (!backendProfile || backendSyncBlocked) return;
-      const saved = await saveWorkspace(snapshot, backendRevision, backendProfile.role);
-      backendRevision = saved.revision;
-    }).catch(async (error) => {
-      console.error("No se pudieron sincronizar los cambios con Supabase.", error);
-      backendSyncBlocked = true;
-      try {
-        if (authenticatedUser && backendProfile) {
-          const latest = await refreshWorkspace(createInitialState(), authenticatedUser.id, backendProfile.role);
-          backendRevision = latest.revision;
-          state = validateState(latest.state);
-          modal = null;
-          draft = null;
-          render();
-        }
-      } catch (refreshError) {
-        console.error("No se pudo recuperar el estado compartido después del error.", refreshError);
-      }
-      render();
-    }).finally(() => {
-      pendingBackendWrites = Math.max(0, pendingBackendWrites - 1);
-      if (pendingBackendWrites === 0 && backendRefreshQueued) void syncWorkspaceFromRealtime();
-    });
+    queueWorkspaceWrite(
+      (revision, role) => saveWorkspace(snapshot, revision, role),
+      "No se pudieron sincronizar los cambios con Supabase.",
+    );
     if (successMessage) notify(successMessage);
     return true;
   }
@@ -763,7 +772,7 @@ function modalContent(current) {
       return kitchenOrderContent(current.data.orderId);
     case "new-order":
       return {
-        body: orderFormMenu(),
+        body: `${orderFormMenu()}${draft.editingOrderId ? `<div class="form-footer">${button(`request-order-delete:${draft.editingOrderId}`, "Eliminar pedido", { kind: "danger" })}</div>` : ""}`,
         overlay: menuChoiceDialog(),
         footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" form="new-order-form" ${draft.items.length ? "" : "disabled"}>${icon("receipt")}${draft.editingOrderId ? "Guardar cambios" : "Enviar a cocina"} · ${formatMoney(orderCartTotal(), state.settings.currency)}</button>`,
       };
@@ -797,7 +806,7 @@ function modalContent(current) {
     case "confirm":
       return {
         body: `<p style="font-size:12px;line-height:1.7">${esc(current.data.description)}</p>`,
-        footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button ${current.data.danger === false ? "primary" : "danger"}" type="button" data-action="confirm:${esc(current.data.action)}">${esc(current.data.label)}</button>`,
+        footer: `<button class="button" type="button" data-action="${current.data.returnToOrderEdit ? `cancel-order-delete:${esc(current.data.orderId)}` : "close-modal"}">Cancelar</button><button class="button ${current.data.danger === false ? "primary" : "danger"}" type="button" data-action="confirm:${esc(current.data.action)}">${esc(current.data.label)}</button>`,
       };
     default:
       return { body: emptyState("No se pudo abrir esta ventana", "Cierra e inténtalo de nuevo."), footer: "" };
@@ -886,6 +895,42 @@ function startEditingOrder(orderId) {
     description: "Al guardar, la comanda volverá a Cocina para preparar los cambios.",
     wide: true,
   });
+}
+
+function deleteOrderFromOrders(orderId) {
+  if (!hasActiveRole("owner", "cashier")) {
+    return notify("Este perfil no puede eliminar pedidos.", "error");
+  }
+  const next = JSON.parse(JSON.stringify(state));
+  let order;
+  try {
+    order = removeReadyOrder(next, orderId);
+  } catch (error) {
+    return notify(error.message, "warning");
+  }
+
+  if (!backendProfile) {
+    if (persist((current) => removeReadyOrder(current, orderId), `Pedido ${orderDisplayId(order)} eliminado.`)) {
+      closeModal();
+    }
+    return;
+  }
+  if (backendSyncBlocked) {
+    return notify("No se puede eliminar el pedido hasta recuperar la sincronización. Actualiza e inténtalo de nuevo.", "error", 6000);
+  }
+  if (!navigator.onLine) {
+    return notify("Conéctate a internet para eliminar este pedido del espacio compartido.", "warning", 6000);
+  }
+
+  state = next;
+  modal = null;
+  draft = null;
+  render();
+  queueWorkspaceWrite(
+    (revision) => deleteReadyOrderFromWorkspace(orderId, revision),
+    `No se pudo eliminar el pedido ${orderDisplayId(order)} en Supabase.`,
+  );
+  notify(`Pedido ${orderDisplayId(order)} eliminado.`);
 }
 
 function captureDraftForm() {
@@ -1973,6 +2018,38 @@ function actionClicked(action) {
     case "close-modal":
       closeModal();
       return;
+    case "cancel-order-delete": {
+      const orderId = value;
+      if (!draft || draft.editingOrderId !== orderId || !state.orders.some((order) => order.id === orderId)) {
+        closeModal();
+        return;
+      }
+      openModal("new-order", {
+        title: `Editar pedido ${orderDisplayId(state.orders.find((order) => order.id === orderId))}`,
+        description: "Al guardar, la comanda volverá a Cocina para preparar los cambios.",
+        wide: true,
+      });
+      return;
+    }
+    case "request-order-delete": {
+      if (!draft?.editingOrderId || draft.editingOrderId !== value) {
+        return notify("El pedido ya no está disponible para eliminar.", "warning");
+      }
+      const order = state.orders.find((item) => item.id === value);
+      if (!order || order.status !== "ready" || order.payment?.paidAt) {
+        return notify("Solo se pueden eliminar pedidos listos que aún no estén pagados.", "warning");
+      }
+      openModal("confirm", {
+        action: `delete-order:${order.id}`,
+        danger: true,
+        description: `Se eliminará permanentemente el pedido ${orderDisplayId(order)}. Esta acción no se puede deshacer.`,
+        label: "Eliminar pedido",
+        orderId: order.id,
+        returnToOrderEdit: true,
+        title: "¿Eliminar este pedido?",
+      });
+      return;
+    }
     case "backdrop":
       closeModal();
       return;
@@ -2204,6 +2281,10 @@ function actionClicked(action) {
     case "confirm": {
       if (value === "reset-demo") return resetDemo();
       if (value === "recover-demo") return resetDemo();
+      if (value.startsWith("delete-order:")) {
+        deleteOrderFromOrders(value.slice("delete-order:".length));
+        return;
+      }
       if (value.startsWith("remove-member:")) {
         const memberId = value.slice("remove-member:".length);
         void deleteStaffAccount(memberId);

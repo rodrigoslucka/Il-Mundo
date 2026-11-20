@@ -103,6 +103,20 @@ export async function saveWorkspace(state, revision, role) {
   return row;
 }
 
+export async function deleteReadyOrderFromWorkspace(orderId, revision) {
+  const { data, error } = await supabase.rpc("il_mundo_delete_ready_order", {
+    p_order_id: orderId,
+    p_expected_revision: revision,
+  });
+  throwIfError(error, "Eliminar el pedido");
+  const row = data?.[0];
+  const savedRevision = Number(row?.revision);
+  if (!Number.isSafeInteger(savedRevision)) {
+    throw new Error("Supabase no confirmó la eliminación del pedido.");
+  }
+  return { ...row, revision: savedRevision };
+}
+
 export async function refreshWorkspace(initialState, userId, role) {
   return loadWorkspace(initialState, userId, role);
 }
