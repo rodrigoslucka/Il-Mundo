@@ -286,9 +286,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ticket-header strong { font: 800 clamp(14px, 1.25vw, 19px)/1.2 "Manrope", sans-serif; }
 .ticket-age { color: var(--muted); font-size: 10px; white-space: nowrap; }
 .ticket-primary { display: grid; flex: 1; align-content: center; justify-items: center; gap: 12px; min-width: 0; text-align: center; }
-.ticket-order-items { display: grid; width: 100%; max-height: 110px; gap: 5px; overflow-y: auto; overscroll-behavior: contain; }
-.ticket-order-item { color: #4b443e; font: 800 clamp(16px, 1.45vw, 21px)/1.2 "Manrope", sans-serif; overflow-wrap: anywhere; }
-.ticket-location { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ticket-color); font: 750 12px/1.2 "Manrope", sans-serif; overflow-wrap: anywhere; }
+.ticket-order-items { display: grid; width: 100%; max-height: 150px; gap: 7px; overflow-y: auto; overscroll-behavior: contain; }
+.ticket-order-item { color: #4b443e; font: 800 clamp(20px, 1.8vw, 28px)/1.2 "Manrope", sans-serif; overflow-wrap: anywhere; }
+.ticket-location { display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--ticket-color); font: 750 14px/1.2 "Manrope", sans-serif; overflow-wrap: anywhere; }
 .ticket-location .icon { width: 16px; height: 16px; flex: 0 0 auto; }
 .ticket-service-label { color: var(--ticket-color); font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .ticket-summary-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

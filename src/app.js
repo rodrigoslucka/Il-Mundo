@@ -10,7 +10,7 @@ import {
   todayKey,
   validateState,
   normalizePizzaVariants,
-} from "./data.js?v=11";
+} from "./data.js?v=12";
 import {
   getWorkspaceProfile,
   inviteOrManageStaff,
@@ -27,6 +27,7 @@ import {
 import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
 import { renderCashPage } from "./features/cash/page.js";
 import { formatKitchenTicketItems } from "./features/kitchen/format-ticket-items.js";
+import { closeReadyOrder, ORDER_PAYMENT_METHODS, paidOrders, sendEditedOrderToKitchen } from "./features/orders/workflow.js";
 
 const app = document.querySelector("#app");
 installDiagnostics();
@@ -89,6 +90,7 @@ let notificationsEnabledOnDevice = localStorage.getItem("ilmundo.notifications.e
 const OPERATING_MODES = [
   { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "worker"] },
   { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "worker"] },
+  { id: "sales", label: "Ventas", icon: "wallet", roles: ["owner", "cashier"] },
 ];
 
 function icon(name, extraClass = "") {
@@ -168,9 +170,9 @@ function notify(message, kind = "success", duration = 3200) {
   window.setTimeout(() => toast.remove(), duration);
 }
 
-function persist(mutator, successMessage) {
-  if (!isAdmin() && !isCashier()) {
-    notify("Solo el administrador o Caja pueden modificar información.", "error");
+function persist(mutator, successMessage, allowedRoles = ["owner", "cashier"]) {
+  if (!hasActiveRole(...allowedRoles)) {
+    notify("Este perfil no puede modificar esta información.", "error");
     return false;
   }
   const next = JSON.parse(JSON.stringify(state));
@@ -415,17 +417,21 @@ function renderHome() {
     </div>`;
 }
 
-function orderCard(order) {
-  const [statusText, statusClass] = statusMeta(order.status);
-  const canPrepare = isAdmin();
-  const canTakeDelivery = isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
-  const canAssign = isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
+function orderCard(order, readOnly = false) {
+  const [statusText, statusClass] = order.payment?.paidAt ? ["Pagado", "delivered"] : statusMeta(order.status);
+  const canPrepare = !readOnly && hasActiveRole("owner", "worker");
+  const canTakeDelivery = !readOnly && isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
+  const canAssign = !readOnly && isAdmin() && order.channel === "delivery" && order.status !== "delivered" && !order.deliveryPersonId;
   const canUpdate = (order.status === "new" && canPrepare) || (order.status === "preparing" && canPrepare) || canTakeDelivery || canAssign;
+  const canEdit = !readOnly && hasActiveRole("owner", "cashier") && order.status === "ready" && !order.payment?.paidAt;
+  const canClose = !readOnly && hasActiveRole("owner", "cashier") && order.status === "ready" && !order.payment?.paidAt;
   const actionButtons = [
     order.status === "new" && canPrepare ? button(`start-order:${order.id}`, "Empezar", { kind: "soft", extra: "small-button" }) : "",
     order.status === "preparing" && canPrepare ? button(`ready-order:${order.id}`, "Marcar listo", { kind: "primary", extra: "small-button" }) : "",
     canAssign ? button(`assign-order:${order.id}`, "Asignar repartidor", { extra: "small-button", icon: "bike" }) : "",
     canTakeDelivery ? button(`take-delivery:${order.id}`, "Tomar pedido", { kind: "primary", extra: "small-button" }) : "",
+    canEdit ? button(`edit-order:${order.id}`, "Editar", { kind: "soft", extra: "small-button" }) : "",
+    canClose ? button(`close-order:${order.id}`, "Cobrar y cerrar", { kind: "primary", extra: "small-button", icon: "check" }) : "",
   ].filter(Boolean).join("");
   const items = order.items.map((item) => `<div class="order-item-line"><strong>${item.quantity}× ${esc(item.name)}${item.variant ? ` · ${esc(item.variant)}` : ""}${item.extras?.length ? `<span class="secondary-line">Extra: ${item.extras.map(esc).join(", ")}</span>` : ""}${item.notes ? `<span class="secondary-line">Nota: ${esc(item.notes)}</span>` : ""}</strong><span>${formatMoney(item.price * item.quantity, state.settings.currency)}</span></div>`).join("");
   return `<article class="order-card">
@@ -434,17 +440,18 @@ function orderCard(order) {
     <div class="order-items">${items}</div>
     ${order.notes ? `<p class="order-notes">${icon("note")} ${esc(order.notes)}</p>` : ""}
     ${order.channel === "delivery" && order.address ? `<p class="small muted">${esc(order.address)}</p>` : ""}
-    <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></span><span class="order-actions">${canUpdate ? actionButtons : ""}</span></div>
+    ${order.payment?.paidAt ? `<p class="small muted">Pagado con ${esc(order.payment.method || order.paymentMethod || "—")} · ${clockTime(order.payment.paidAt)}</p>` : ""}
+    <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></span><span class="order-actions">${canUpdate || canEdit || canClose ? actionButtons : ""}</span></div>
   </article>`;
 }
 
 function renderOrders() {
-  const orders = todayOrders();
+  const orders = todayOrders().filter((order) => order.status === "ready" && !order.payment?.paidAt);
   orders.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const canCreateOrder = isAdmin() || isCashier();
   if (!canCreateOrder) {
     return `${pageHeading("DELIVERY", "Entregas pendientes", "", "")}
-      ${orders.length ? `<div class="order-grid">${orders.map(orderCard).join("")}</div>` : `<div class="card">${emptyState("No hay entregas pendientes", "Los pedidos asignados aparecerán aquí.")}</div>`}`;
+      ${orders.length ? `<div class="order-grid">${orders.map(orderCard).join("")}</div>` : `<div class="card">${emptyState("No hay pedidos listos", "Las comandas aparecerán aquí cuando Cocina las marque como listas.")}</div>`}`;
   }
   return `<div class="orders-workspace ${orders.length ? "has-orders" : ""}">
       <button class="cash-new-order" type="button" data-action="new-order">
@@ -454,8 +461,22 @@ function renderOrders() {
       ${orders.length ? `<section class="cash-orders-section">
         <div class="cash-orders-heading"><h2>Pedidos de hoy</h2><span>${orders.length}</span></div>
         <div class="order-grid">${orders.map(orderCard).join("")}</div>
-      </section>` : ""}
+      </section>` : `<div class="card">${emptyState("Todavía no hay pedidos listos", "Las comandas aparecerán aquí cuando Cocina las marque como listas.", "receipt")}</div>`}
     </div>`;
+}
+
+function renderSales() {
+  const sales = paidOrders(todayOrders())
+    .sort((a, b) => b.payment.paidAt.localeCompare(a.payment.paidAt));
+  const total = sales.reduce((sum, order) => sum + Number(order.payment.amount ?? orderTotal(order)), 0);
+  return `${pageHeading("VENTAS", "Ventas de hoy", "Pedidos cobrados y cerrados durante el día.")}
+    <div class="metric-grid">
+      <article class="card metric-card"><div class="metric-head"><span>Ventas cobradas</span><span class="metric-icon">${icon("receipt")}</span></div><div class="metric-value">${sales.length}</div><div class="metric-foot">${sales.length === 1 ? "pedido cerrado" : "pedidos cerrados"}</div></article>
+      <article class="card metric-card"><div class="metric-head"><span>Total vendido</span><span class="metric-icon">${icon("wallet")}</span></div><div class="metric-value">${formatMoney(total, state.settings.currency)}</div><div class="metric-foot">Pedidos pagados hoy</div></article>
+    </div>
+    ${sales.length
+      ? `<section class="cash-orders-section"><div class="cash-orders-heading"><h2>Pedidos cobrados</h2><span>${sales.length}</span></div><div class="order-grid">${sales.map((order) => orderCard(order, true)).join("")}</div></section>`
+      : `<div class="card">${emptyState("Aún no hay ventas", "Los pedidos aparecerán aquí al registrar su pago.", "wallet")}</div>`}`;
 }
 
 function kitchenTicket(order) {
@@ -483,7 +504,9 @@ function kitchenTicket(order) {
 }
 
 function renderKitchen() {
-  const all = todayOrders().filter((order) => order.status !== "delivered" && order.status !== "ready").sort((a, b) => {
+  const all = todayOrders().filter((order) =>
+    order.status !== "delivered" && order.status !== "ready" && !order.payment?.paidAt,
+  ).sort((a, b) => {
     const priority = { new: 0, preparing: 1, ready: 2 };
     return priority[a.status] - priority[b.status] || a.createdAt.localeCompare(b.createdAt);
   });
@@ -504,7 +527,7 @@ function kitchenOrderContent(orderId) {
     ${item.extras?.length ? `<p class="kitchen-modal-note">+ ${item.extras.map(esc).join(", ")}</p>` : ""}
     ${item.notes ? `<p class="kitchen-modal-note">${icon("note")}${esc(item.notes)}</p>` : ""}
   </article>`).join("");
-  const completeLabel = "Pedido finalizado";
+  const completeLabel = "Marcar pedido listo";
   const notes = order.notes ? `<p class="kitchen-modal-general-note">${icon("note")}${esc(order.notes)}</p>` : "";
   return {
     body: `<div class="kitchen-modal-order">
@@ -512,7 +535,9 @@ function kitchenOrderContent(orderId) {
       <div class="kitchen-modal-items">${items}</div>
       ${notes}
     </div>`,
-    footer: isAdmin() ? button(`complete-order:${order.id}`, completeLabel, { kind: "primary" }) : "",
+    footer: hasActiveRole("owner", "worker") && ["new", "preparing"].includes(order.status)
+      ? button(`complete-order:${order.id}`, completeLabel, { kind: "primary" })
+      : "",
   };
 }
 
@@ -633,10 +658,10 @@ function orderFormMenu() {
     category,
     products: state.menu.filter((product) => product.active && product.category === category),
   }));
-  const paymentMethods = state.settings.paymentMethods;
   const channelOptions = [
     ["dinein", "En mesa", "table"],
     ["pickup", "Para llevar", "store"],
+    ...(draft.channel === "delivery" ? [["delivery", "Delivery", "bike"]] : []),
   ];
   const productTiles = productsByCategory.map(({ category, products }) => `
     <section class="order-menu-category">
@@ -659,7 +684,8 @@ function orderFormMenu() {
     <div class="wizard-section"><h3 class="wizard-section-title">Tipo de pedido</h3><div class="channel-select">${channelOptions.map(([value, label, iconName]) => `<span class="channel-option"><input type="radio" id="channel-${value}" name="channel" data-focus="channel-${value}" value="${value}" ${draft.channel === value ? "checked" : ""}><label for="channel-${value}">${icon(iconName)}${esc(label)}</label></span>`).join("")}</div></div>
     <div class="form-grid wizard-section">
       ${draft.channel === "dinein" ? `<div class="form-field"><p class="field-hint">Pedido para consumir en el salón.</p></div>` : `<div class="form-field"><label for="order-customer">Nombre del pedido</label><input id="order-customer" class="form-control" name="customerName" maxlength="70" required placeholder="Ej.: Andrea" value="${esc(draft.customerName)}"></div>`}
-      ${draft.channel === "pickup" ? `<div class="form-field wide"><label for="order-notes">Nota para cocina (opcional)</label><input id="order-notes" class="form-control" name="notes" maxlength="200" placeholder="Por ejemplo: sin cebolla" value="${esc(draft.notes)}"></div>` : ""}
+      ${draft.channel === "delivery" ? `<div class="form-field"><label for="order-phone">Teléfono</label><input id="order-phone" class="form-control" name="phone" maxlength="40" value="${esc(draft.phone)}"></div><div class="form-field wide"><label for="order-address">Dirección</label><input id="order-address" class="form-control" name="address" maxlength="200" required value="${esc(draft.address)}"></div>` : ""}
+      ${draft.channel !== "dinein" ? `<div class="form-field wide"><label for="order-notes">Nota para cocina (opcional)</label><input id="order-notes" class="form-control" name="notes" maxlength="200" placeholder="Por ejemplo: sin cebolla" value="${esc(draft.notes)}"></div>` : ""}
     </div>
     <div class="wizard-section">
       <div class="section-heading" style="margin:0 0 8px"><h3 class="wizard-section-title" style="margin:0">Carta</h3></div>
@@ -669,8 +695,7 @@ function orderFormMenu() {
       <div class="cart-lines">${cartHtml}</div>
       <div class="cart-total"><span>Total estimado</span><span>${formatMoney(orderCartTotal(), state.settings.currency)}</span></div>
     </section>
-    ${paymentMethods.length ? `<fieldset class="payment-method-field wizard-section"><legend>Medio de pago</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago">${paymentMethods.map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="order-payment-${index}" name="paymentMethod" value="${esc(method)}" ${method === draft.paymentMethod ? "checked" : ""} required><label for="order-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div><span class="field-hint">Recibe el pago antes de enviar el pedido a cocina.</span></fieldset>` : `<div class="notice danger-note wizard-section">${icon("alert")}<span>Activa al menos un medio de pago en Ajustes para enviar este pedido.</span></div>`}
-    ${!activeCashSession(state) ? `<div class="notice wizard-section">${icon("alert")}<span>El pedido se podrá enviar, pero el pago no se asociará a un turno de Caja abierto.</span></div>` : ""}
+    <p class="field-hint wizard-section">El pago se registra al cerrar el pedido desde Pedidos.</p>
     <span id="order-form-live" class="sr-only" aria-live="polite"></span>
   </form>`;
 }
@@ -733,7 +758,12 @@ function modalContent(current) {
       return {
         body: orderFormMenu(),
         overlay: menuChoiceDialog(),
-        footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" form="new-order-form" ${draft.items.length && state.settings.paymentMethods.includes(draft.paymentMethod) ? "" : "disabled"}>${icon("receipt")}Enviar a cocina · ${formatMoney(orderCartTotal(), state.settings.currency)}</button>`,
+        footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" form="new-order-form" ${draft.items.length ? "" : "disabled"}>${icon("receipt")}${draft.editingOrderId ? "Guardar cambios" : "Enviar a cocina"} · ${formatMoney(orderCartTotal(), state.settings.currency)}</button>`,
+      };
+    case "close-order":
+      return {
+        body: `<form id="close-order-form" data-form="close-order"><input type="hidden" name="orderId" value="${esc(current.data.orderId)}"><fieldset class="payment-method-field"><legend>Medio de pago</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago">${ORDER_PAYMENT_METHODS.filter((method) => state.settings.paymentMethods.includes(method)).map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="close-payment-${index}" name="paymentMethod" value="${esc(method)}" ${index === 0 ? "checked" : ""} required><label for="close-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div></fieldset><p class="cart-total"><span>Total a cobrar</span><strong>${formatMoney(current.data.total, state.settings.currency)}</strong></p>${activeCashSession(state) ? "" : `<div class="notice wizard-section">${icon("alert")}<span>La caja está cerrada; el pago se registrará en el pedido, pero no en un turno activo.</span></div>`}</form>`,
+        footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" form="close-order-form">${icon("check")}Registrar pago y cerrar</button>`,
       };
     case "switch-role":
       return {
@@ -772,6 +802,7 @@ function openModal(kind, options = {}) {
     kind,
     title: options.title || ({
       "new-order": "Nuevo pedido",
+      "close-order": "Cerrar pedido",
       "switch-role": "Vista previa de un perfil",
       "assign-delivery": "Asignar repartidor",
       "product-edit": options.product ? "Editar producto" : "Agregar producto",
@@ -805,7 +836,6 @@ function startNewOrder(options = {}) {
     phone: "",
     address: "",
     notes: "",
-    paymentMethod: state.settings.paymentMethods[0] || "",
     search: "",
     category: "all",
     items: [],
@@ -818,17 +848,50 @@ function startNewOrder(options = {}) {
   openModal("new-order", { wide: true });
 }
 
+function startEditingOrder(orderId) {
+  if (!hasActiveRole("owner", "cashier")) return notify("Este perfil no puede editar pedidos.", "error");
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order || order.status !== "ready" || order.payment?.paidAt) {
+    return notify("Solo se pueden editar pedidos listos que aún no se hayan cobrado.", "warning");
+  }
+  draft = {
+    editingOrderId: order.id,
+    channel: order.channel,
+    tableId: order.tableId || "",
+    customerName: order.customerName || "",
+    phone: order.phone || "",
+    address: order.address || "",
+    notes: order.notes || "",
+    search: "",
+    category: "all",
+    items: order.items.map((item) => ({ ...item, extras: [...(item.extras || [])] })),
+    selectedProductId: "",
+    selectedQuantities: {},
+    selectedVariants: Object.fromEntries(state.menu.map((item) => [item.id, defaultOrderVariant(item)?.name])),
+    selectedExtras: {},
+    itemNotes: {},
+  };
+  for (const item of order.items) {
+    if (item.menuItemId && item.variant) draft.selectedVariants[item.menuItemId] = item.variant;
+  }
+  openModal("new-order", {
+    title: `Editar pedido ${orderDisplayId(order)}`,
+    description: "Al guardar, la comanda volverá a Cocina para preparar los cambios.",
+    wide: true,
+  });
+}
+
 function captureDraftForm() {
   const form = document.querySelector("#new-order-form");
   if (!form || !draft) return;
   const fields = new FormData(form);
   draft.channel = String(fields.get("channel") || draft.channel);
   draft.tableId = String(fields.get("tableId") || draft.tableId || "");
-  draft.customerName = String(fields.get("customerName") || "");
-  draft.phone = String(fields.get("phone") || "");
-  draft.address = String(fields.get("address") || "");
-  draft.notes = String(fields.get("notes") || "");
-  draft.paymentMethod = String(fields.get("paymentMethod") || draft.paymentMethod || "");
+  if (form.elements.namedItem("customerName")) draft.customerName = String(fields.get("customerName") || "");
+  else if (draft.channel === "dinein") draft.customerName = "";
+  if (form.elements.namedItem("phone")) draft.phone = String(fields.get("phone") || "");
+  if (form.elements.namedItem("address")) draft.address = String(fields.get("address") || "");
+  if (form.elements.namedItem("notes")) draft.notes = String(fields.get("notes") || "");
 }
 
 function simplifyDineInDraft() {
@@ -853,12 +916,12 @@ function simplifyDineInDraft() {
 function createOrder() {
   captureDraftForm();
   simplifyDineInDraft();
-  if (!draft.items.length) {
-    notify("Agrega al menos un producto antes de enviar el pedido.", "warning");
+  if (draft.editingOrderId) {
+    saveEditedOrder();
     return;
   }
-  if (!state.settings.paymentMethods.includes(draft.paymentMethod)) {
-    notify("Elige un medio de pago disponible en Ajustes.", "error");
+  if (!draft.items.length) {
+    notify("Agrega al menos un producto antes de enviar el pedido.", "warning");
     return;
   }
   if (draft.tableId && !state.tables.some((table) => table.id === draft.tableId)) {
@@ -867,6 +930,10 @@ function createOrder() {
   }
   if (draft.channel === "pickup" && !draft.customerName.trim()) {
     notify("Indica un nombre para identificar el pedido para llevar.", "error");
+    return;
+  }
+  if (draft.channel === "delivery" && (!draft.customerName.trim() || !draft.address.trim())) {
+    notify("Completa el nombre y la dirección del pedido.", "error");
     return;
   }
   const table = state.tables.find((item) => item.id === draft.tableId);
@@ -883,27 +950,93 @@ function createOrder() {
     phone: "",
     address: "",
     notes: draft.channel === "dinein" ? "" : draft.notes.trim(),
-    paymentMethod: draft.paymentMethod,
     items: draft.items,
     status: "new",
     createdAt: new Date().toISOString(),
     createdBy: authenticatedUser?.id || state.activeMemberId,
     deliveryPersonId: "",
-    payment: { method: draft.paymentMethod, amount: orderTotal({ items: draft.items }), paidAt: new Date().toISOString() },
   };
-  const stored = persist((next) => {
-    next.orders.push(order);
-    const session = next.cashSessions.find((item) => !item.closedAt);
-    if (session) session.transactions.push({ orderId: order.id, ...order.payment });
-  });
+  const stored = persist((next) => next.orders.push(order));
   if (!stored) return;
   modal = null;
   draft = null;
-  screen = "orders";
+  screen = isAdmin() ? "kitchen" : "orders";
+  history.replaceState(null, "", `#${screen}`);
+  rememberScreen(screen);
   render();
   playNotification();
   publishNotification(order);
-  notify(`Pedido ${orderDisplayId(order)} confirmado y pago registrado.`, "success");
+  notify(`Pedido ${orderDisplayId(order)} enviado a Cocina. Aparecerá en Pedidos cuando esté listo.`, "success");
+}
+
+function saveEditedOrder() {
+  if (!draft || !draft.items.length) {
+    notify("El pedido debe tener al menos un producto.", "warning");
+    return;
+  }
+  const orderId = draft.editingOrderId;
+  const existing = state.orders.find((item) => item.id === orderId);
+  if (!existing || existing.status !== "ready" || existing.payment?.paidAt) {
+    notify("El pedido cambió o ya fue cobrado; actualiza e inténtalo de nuevo.", "warning");
+    return;
+  }
+  if (draft.tableId && !state.tables.some((table) => table.id === draft.tableId)) {
+    notify("La mesa seleccionada ya no está disponible.", "error");
+    return;
+  }
+  if (draft.channel === "pickup" && !draft.customerName.trim()) {
+    notify("Indica un nombre para identificar el pedido para llevar.", "error");
+    return;
+  }
+  if (draft.channel === "delivery" && (!draft.customerName.trim() || !draft.address.trim())) {
+    notify("Completa el nombre y la dirección del pedido.", "error");
+    return;
+  }
+  const table = state.tables.find((item) => item.id === draft.tableId);
+  const saved = persist((next) => {
+    sendEditedOrderToKitchen(next, orderId, {
+      channel: draft.channel,
+      tableId: table?.id || "",
+      tableName: table?.name || "",
+      customerName: draft.channel === "dinein" ? "" : draft.customerName.trim(),
+      phone: draft.phone.trim(),
+      address: draft.address.trim(),
+      notes: draft.channel === "dinein" ? "" : draft.notes.trim(),
+      items: draft.items,
+    }, new Date().toISOString());
+  });
+  if (!saved) return;
+  const order = state.orders.find((item) => item.id === orderId);
+  modal = null;
+  draft = null;
+  screen = isAdmin() ? "kitchen" : "orders";
+  history.replaceState(null, "", `#${screen}`);
+  rememberScreen(screen);
+  render();
+  if (order) {
+    playNotification();
+    publishNotification(order);
+    notify(`Pedido ${orderDisplayId(order)} actualizado y enviado a Cocina.`, "success");
+  }
+}
+
+function closeOrderWithPayment(form) {
+  const fields = new FormData(form);
+  const orderId = String(fields.get("orderId") || "");
+  const method = String(fields.get("paymentMethod") || "");
+  if (!state.settings.paymentMethods.includes(method)) {
+    notify("Elige un medio de pago disponible.", "error");
+    return;
+  }
+  const order = state.orders.find((item) => item.id === orderId);
+  if (!order || order.status !== "ready" || order.payment?.paidAt) {
+    notify("El pedido ya no está disponible para cobrar.", "warning");
+    return;
+  }
+  if (persist(
+    (next) => closeReadyOrder(next, orderId, method, new Date().toISOString()),
+    `Pedido ${orderDisplayId(order)} cobrado con ${method} y cerrado.`,
+  )) navigate("sales");
 }
 
 function initialiseAudio() {
@@ -992,7 +1125,10 @@ function publishNotification(order) {
 }
 
 function updateOrderStatus(orderId, status) {
-  if (!isAdmin()) return notify("Solo el administrador puede cambiar el estado de los pedidos.", "error");
+  const kitchenStatus = ["preparing", "ready"].includes(status);
+  if (kitchenStatus ? !hasActiveRole("owner", "worker") : !isAdmin()) {
+    return notify("Este perfil no puede cambiar el estado del pedido.", "error");
+  }
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) return notify("La comanda ya no está disponible.", "error");
   const authorized = status === "preparing"
@@ -1008,12 +1144,18 @@ function updateOrderStatus(orderId, status) {
     notify("Este perfil no puede cambiar ese estado.", "error");
     return;
   }
-  if (persist((next) => {
+  const saved = persist((next) => {
     const target = next.orders.find((item) => item.id === orderId);
     target.status = status;
     target.updatedAt = new Date().toISOString();
-  }, status === "ready" ? undefined : `Comanda ${orderDisplayId(order)}: ${statusMeta(status)[0].toLowerCase()}.`)) {
+  }, status === "ready" ? undefined : `Comanda ${orderDisplayId(order)}: ${statusMeta(status)[0].toLowerCase()}.`, kitchenStatus ? ["owner", "worker"] : ["owner", "cashier"]);
+  if (saved) {
     modal = null;
+    if (status === "ready" && screen === "kitchen") {
+      screen = "orders";
+      history.replaceState(null, "", "#orders");
+      rememberScreen(screen);
+    }
     render();
     if (status === "ready") notifyOrderReady(order);
   }
@@ -1084,9 +1226,14 @@ function handleChange(event) {
     return;
   }
   if (target.matches('input[name="channel"]')) {
+    const previousChannel = draft.channel;
     captureDraftForm();
     draft.channel = target.value;
     if (draft.channel !== "dinein") draft.tableId = "";
+    if (previousChannel === "delivery" && draft.channel !== "delivery") {
+      draft.phone = "";
+      draft.address = "";
+    }
     else simplifyDineInDraft();
     renderModal();
     return;
@@ -1208,6 +1355,12 @@ async function submitForm(event) {
   if (form.id === "new-order-form") {
     event.preventDefault();
     handleNewOrder(event);
+    return;
+  }
+  if (form.id === "close-order-form") {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    closeOrderWithPayment(form);
     return;
   }
   event.preventDefault();
@@ -1544,6 +1697,7 @@ function render() {
     home: renderHome,
     orders: renderOrders,
     kitchen: renderKitchen,
+    sales: renderSales,
     tables: renderTables,
     cash: () => renderCashPage(state, { badge, button, clockTime, emptyState, esc, formatMoney, hasActiveRole, icon, pageHeading, orderDisplayId }),
     menu: renderSettings,
@@ -1895,6 +2049,20 @@ function actionClicked(action) {
         orderId: value,
         title: `Pedido ${orderDisplayId(order)}`,
         description: location,
+      });
+      return;
+    }
+    case "edit-order":
+      startEditingOrder(value);
+      return;
+    case "close-order": {
+      if (!hasActiveRole("owner", "cashier")) return notify("Solo el administrador o Caja puede cobrar pedidos.", "error");
+      const order = state.orders.find((item) => item.id === value && item.status === "ready" && !item.payment?.paidAt);
+      if (!order) return notify("El pedido ya no está disponible para cobrar.", "warning");
+      openModal("close-order", {
+        orderId: order.id,
+        total: orderTotal(order),
+        title: `Cerrar pedido ${orderDisplayId(order)}`,
       });
       return;
     }

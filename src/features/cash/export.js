@@ -96,14 +96,14 @@ function cashRows(state) {
     [],
     [
       "Turno", "Fecha", "Estado", "Abrió", "Monto de apertura", "Total generado",
-      "Efectivo", "QR", "Inicio", "Cierre",
+      "Efectivo", "QR", "Tarjeta", "Inicio", "Cierre",
     ],
   ];
   const paymentRows = [[`Movimientos de caja — ${state.settings?.businessName || "Il Mundo"}`], [], ["Turno", "Fecha y hora", "Pedido", "Medio de pago", "Importe"]];
 
   for (const session of sessions) {
     const transactions = Array.isArray(session.transactions) ? session.transactions : [];
-    const totals = createPaymentTotals(transactions, state.settings?.paymentMethods || ["Efectivo", "QR"]);
+    const totals = createPaymentTotals(transactions, state.settings?.paymentMethods || ["Efectivo", "QR", "Tarjeta"]);
     const opening = cents(session.openingAmount);
     const cash = totals.Efectivo || 0;
     const qr = totals.QR || 0;
@@ -117,6 +117,7 @@ function cashRows(state) {
       cents(Object.values(totals).reduce((sum, amount) => sum + amount, 0)),
       cash,
       qr,
+      totals.Tarjeta || 0,
       session.openedAt || "",
       session.closedAt || "",
     ]);
@@ -219,7 +220,7 @@ export function createCashWorkbook(state) {
   }
   const files = [
     ...workbookEntries,
-    ["xl/worksheets/sheet1.xml", worksheet(summaryRows, [24, 14, 12, 22, 19, 18, 15, 15, 18, 21, 20, 15, 25, 25], [4, 5, 6, 7, 8, 9, 10, 11], 3)],
+    ["xl/worksheets/sheet1.xml", worksheet(summaryRows, [24, 14, 12, 22, 19, 18, 15, 15, 15, 18, 21], [4, 5, 6, 7, 8, 9], 3)],
     ["xl/worksheets/sheet2.xml", worksheet(paymentRows, [24, 25, 25, 20, 16], [4], 2)],
   ];
   return zipStoredFiles(files);
@@ -246,7 +247,7 @@ export function createDailyBalanceWorkbook(state, dateKey) {
     method: order.payment.method || order.paymentMethod || "",
     amount: cents(order.payment.amount ?? orderTotalForExport(order)),
   }));
-  const totals = createPaymentTotals(payments, state.settings.paymentMethods || ["Efectivo", "QR"]);
+  const totals = createPaymentTotals(payments, state.settings.paymentMethods || ["Efectivo", "QR", "Tarjeta"]);
   const total = cents(payments.reduce((sum, payment) => sum + payment.amount, 0));
   const methodRows = Object.entries(totals).map(([method, amount]) => [method, cents(amount)]);
   const summaryRows = [

@@ -27,6 +27,7 @@ export const NAVIGATION = [
   { id: "home", label: "Resumen", icon: "home", roles: ["owner"] },
   { id: "orders", label: "Pedidos", icon: "receipt", roles: ["owner", "cashier", "worker"] },
   { id: "kitchen", label: "Cocina", icon: "chef", roles: ["owner", "worker"] },
+  { id: "sales", label: "Ventas", icon: "wallet", roles: ["owner", "cashier"] },
   { id: "tables", label: "Mesas", icon: "table", roles: ["owner"] },
   { id: "cash", label: "Caja", icon: "wallet", roles: ["owner", "cashier"] },
   { id: "menu", label: "Menú", icon: "menu", roles: ["owner"] },
@@ -40,7 +41,7 @@ export function createInitialState() {
     settings: {
       businessName: "Il Mundo",
       currency: "BOB",
-      paymentMethods: ["Efectivo", "QR"],
+      paymentMethods: ["Efectivo", "QR", "Tarjeta"],
       menuCategories: ["Pizzas", "Bebidas", "Postres"],
       extras: [
         { id: "extra-mozzarella", name: "Mozzarella extra", price: 1.5 },
@@ -102,6 +103,7 @@ export function validateState(value) {
     throw new Error("El archivo no contiene datos de Il Mundo compatibles.");
   }
   if (value.settings.currency === "USD") value.settings.currency = "BOB";
+  if (!value.settings.paymentMethods.includes("Tarjeta")) value.settings.paymentMethods.push("Tarjeta");
   delete value.settings.deliveryFee;
   for (const order of value.orders) {
     if (order && typeof order === "object") delete order.deliveryFee;

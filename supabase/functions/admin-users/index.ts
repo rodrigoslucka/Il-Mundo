@@ -86,13 +86,45 @@ Deno.serve(async (request) => {
     if (!existingUsers) return respond({ error: "No se pudo comprobar si el correo ya tiene una cuenta." }, 400);
     const existing = existingUsers.find((user) => String(user.email || "").trim().toLowerCase() === email);
     if (existing) return respond({ error: "Ya existe una cuenta con ese correo. Cámbiale la contraseña desde el panel." }, 409);
-    const { data, error } = await serviceClient.auth.admin.createUser({
-      email,
-      password,
-      email_confirm: true,
-      app_metadata: { il_mundo_admin_created: true },
-      user_metadata: { display_name: name },
-    });
+
+    const creationToken = crypto.randomUUID();
+    const expiredBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const { error: expiredTokensError } = await serviceClient
+      .from("il_mundo_admin_user_creation_tokens")
+      .delete()
+      .lt("created_at", expiredBefore);
+    if (expiredTokensError) {
+      console.error("No se pudieron limpiar las autorizaciones de creación vencidas.", expiredTokensError);
+      return respond({ error: "No se pudo preparar la creación de la cuenta." }, 500);
+    }
+
+    const { error: creationTokenError } = await serviceClient
+      .from("il_mundo_admin_user_creation_tokens")
+      .insert({ token: creationToken, email });
+    if (creationTokenError) {
+      console.error("No se pudo preparar la autorización de creación de cuenta.", creationTokenError);
+      return respond({ error: "No se pudo preparar la creación de la cuenta." }, 500);
+    }
+
+    let creationResult: Awaited<ReturnType<typeof serviceClient.auth.admin.createUser>>;
+    try {
+      creationResult = await serviceClient.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        app_metadata: { il_mundo_admin_created: true },
+        user_metadata: { display_name: name, il_mundo_admin_creation_token: creationToken },
+      });
+    } finally {
+      const { error: creationTokenCleanupError } = await serviceClient
+        .from("il_mundo_admin_user_creation_tokens")
+        .delete()
+        .eq("token", creationToken);
+      if (creationTokenCleanupError) {
+        console.error("No se pudo limpiar la autorización de creación de cuenta.", creationTokenCleanupError);
+      }
+    }
+    const { data, error } = creationResult;
     if (error) return respond({ error: error.message }, 400);
     const { error: profileError } = await serviceClient
       .from("il_mundo_profiles")
