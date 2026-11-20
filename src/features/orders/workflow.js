@@ -1,3 +1,5 @@
+import { orderTotal } from "../../data.js";
+
 export const ORDER_PAYMENT_METHODS = ["Efectivo", "QR", "Tarjeta"];
 
 export function paidOrders(orders) {
@@ -35,7 +37,7 @@ export function closeReadyOrder(state, orderId, method, paidAt) {
 
   const payment = {
     method,
-    amount: Math.round(order.items.reduce((sum, item) => sum + item.price * item.quantity, 0) * 100) / 100,
+    amount: orderTotal(order),
     paidAt,
   };
   order.payment = payment;

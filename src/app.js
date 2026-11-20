@@ -4,13 +4,15 @@ import {
   createInitialState,
   formatMoney,
   NAVIGATION,
+  orderServiceFee,
+  orderSubtotal,
   orderTotal,
   saveState,
   STORAGE_KEY,
   todayKey,
   validateState,
   normalizePizzaVariants,
-} from "./data.js?v=12";
+} from "./data.js?v=13";
 import {
   getWorkspaceProfile,
   inviteOrManageStaff,
@@ -351,7 +353,7 @@ function statusMeta(status) {
 }
 
 function channelLabel(channel) {
-  return { dinein: "En mesa", pickup: "Para llevar", delivery: "Delivery" }[channel] || channel;
+  return { dinein: "En mesa", pickup: "Para llevar", delivery: "Delivery", dinky: "Dinky" }[channel] || channel;
 }
 
 function orderDisplayId(order) {
@@ -440,6 +442,7 @@ function orderCard(order, readOnly = false) {
     <div class="order-items">${items}</div>
     ${order.notes ? `<p class="order-notes">${icon("note")} ${esc(order.notes)}</p>` : ""}
     ${order.channel === "delivery" && order.address ? `<p class="small muted">${esc(order.address)}</p>` : ""}
+    ${order.channel === "dinky" ? `<p class="small muted">Servicio Dinky (5%): ${formatMoney(orderServiceFee(order), state.settings.currency)}</p>` : ""}
     ${order.payment?.paidAt ? `<p class="small muted">Pagado con ${esc(order.payment.method || order.paymentMethod || "—")} · ${clockTime(order.payment.paidAt)}</p>` : ""}
     <div class="order-card-foot"><span class="order-total"><strong>${formatMoney(orderTotal(order), state.settings.currency)}</strong></span><span class="order-actions">${canUpdate || canEdit || canClose ? actionButtons : ""}</span></div>
   </article>`;
@@ -484,7 +487,7 @@ function kitchenTicket(order) {
   const age = ageMinutes ? `Hace ${ageMinutes} min` : "Recién llegado";
   const [, statusClass] = statusMeta(order.status);
   const orderStyle = order.channel === "dinein" ? "for-table" : "to-go";
-  const serviceLabel = order.channel === "dinein" ? "En mesa" : "Para llevar";
+  const serviceLabel = channelLabel(order.channel);
   const ticketChannel = order.channel === "dinein" ? (order.tableName || serviceLabel) : serviceLabel;
   const orderLabel = `${orderDisplayId(order)} · ${ticketChannel}`;
   const items = formatKitchenTicketItems(order.items)
@@ -518,7 +521,7 @@ function kitchenOrderContent(orderId) {
   if (!order) return { body: emptyState("Orden no disponible", "La comanda ya se completó o dejó de estar disponible."), footer: "" };
   const location = order.channel === "dinein"
     ? (order.tableName || "En mesa")
-    : order.channel === "delivery" ? "Delivery" : "Para llevar";
+    : channelLabel(order.channel);
   const ageMinutes = Math.max(0, Math.floor((Date.now() - new Date(order.createdAt).getTime()) / 60_000));
   const age = ageMinutes ? `Hace ${ageMinutes} min` : "Recién llegada";
   const [statusText, statusClass] = statusMeta(order.status);
@@ -606,7 +609,7 @@ function renderSettings() {
 }
 
 function orderCartTotal() {
-  return draft.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  return orderTotal({ channel: draft.channel, items: draft.items });
 }
 
 function selectableVariants(product) {
@@ -661,6 +664,7 @@ function orderFormMenu() {
   const channelOptions = [
     ["dinein", "En mesa", "table"],
     ["pickup", "Para llevar", "store"],
+    ["dinky", "Dinky", "store"],
     ...(draft.channel === "delivery" ? [["delivery", "Delivery", "bike"]] : []),
   ];
   const productTiles = productsByCategory.map(({ category, products }) => `
@@ -680,10 +684,12 @@ function orderFormMenu() {
   const cartHtml = draft.items.length
     ? draft.items.map((item, index) => `<div class="cart-line"><span class="cart-line-copy"><strong>${item.quantity}× ${esc(item.name)}${item.variant ? ` · ${esc(item.variant)}` : ""}</strong>${draft.channel !== "dinein" && [...item.extras, item.notes].filter(Boolean).length ? `<span>${[...item.extras, item.notes].filter(Boolean).map(esc).join(" · ")}</span>` : ""}</span><span class="quantity-control"><button type="button" data-action="cart-minus:${index}" aria-label="Quitar una unidad">−</button><strong>${item.quantity}</strong><button type="button" data-action="cart-plus:${index}" aria-label="Sumar una unidad">+</button></span></div>`).join("")
     : `<div class="cart-empty">Elige algo del menú para empezar.</div>`;
+  const cartSubtotal = orderSubtotal({ items: draft.items });
+  const serviceFee = orderServiceFee({ channel: draft.channel, items: draft.items });
   return `<form id="new-order-form" class="new-order-form" data-form="new-order">
     <div class="wizard-section"><h3 class="wizard-section-title">Tipo de pedido</h3><div class="channel-select">${channelOptions.map(([value, label, iconName]) => `<span class="channel-option"><input type="radio" id="channel-${value}" name="channel" data-focus="channel-${value}" value="${value}" ${draft.channel === value ? "checked" : ""}><label for="channel-${value}">${icon(iconName)}${esc(label)}</label></span>`).join("")}</div></div>
     <div class="form-grid wizard-section">
-      ${draft.channel === "dinein" ? `<div class="form-field"><p class="field-hint">Pedido para consumir en el salón.</p></div>` : `<div class="form-field"><label for="order-customer">Nombre del pedido</label><input id="order-customer" class="form-control" name="customerName" maxlength="70" required placeholder="Ej.: Andrea" value="${esc(draft.customerName)}"></div>`}
+      ${draft.channel === "dinein" ? `<div class="form-field"><label for="order-table">Número de mesa</label><select id="order-table" class="form-select" name="tableId" required><option value="">Selecciona una mesa</option>${state.tables.filter((table) => /^mesa-[1-8]$/.test(table.id)).sort((a, b) => Number(a.id.slice(5)) - Number(b.id.slice(5))).map((table) => `<option value="${esc(table.id)}" ${draft.tableId === table.id ? "selected" : ""}>${esc(table.name)}</option>`).join("")}</select></div>` : `<div class="form-field"><label for="order-customer">Nombre del pedido</label><input id="order-customer" class="form-control" name="customerName" maxlength="70" required placeholder="Ej.: Andrea" value="${esc(draft.customerName)}"></div>`}
       ${draft.channel === "delivery" ? `<div class="form-field"><label for="order-phone">Teléfono</label><input id="order-phone" class="form-control" name="phone" maxlength="40" value="${esc(draft.phone)}"></div><div class="form-field wide"><label for="order-address">Dirección</label><input id="order-address" class="form-control" name="address" maxlength="200" required value="${esc(draft.address)}"></div>` : ""}
       ${draft.channel !== "dinein" ? `<div class="form-field wide"><label for="order-notes">Nota para cocina (opcional)</label><input id="order-notes" class="form-control" name="notes" maxlength="200" placeholder="Por ejemplo: sin cebolla" value="${esc(draft.notes)}"></div>` : ""}
     </div>
@@ -693,7 +699,8 @@ function orderFormMenu() {
     </div>
     <section class="cart-panel wizard-section"><h3>Comanda ${draft.items.length ? `· ${draft.items.reduce((sum, item) => sum + item.quantity, 0)} ${draft.items.reduce((sum, item) => sum + item.quantity, 0) === 1 ? "producto" : "productos"}` : ""}</h3>
       <div class="cart-lines">${cartHtml}</div>
-      <div class="cart-total"><span>Total estimado</span><span>${formatMoney(orderCartTotal(), state.settings.currency)}</span></div>
+      ${serviceFee ? `<div class="stat-row"><span>Subtotal</span><strong>${formatMoney(cartSubtotal, state.settings.currency)}</strong></div><div class="stat-row"><span>Servicio Dinky (5%)</span><strong>${formatMoney(serviceFee, state.settings.currency)}</strong></div>` : ""}
+      <div class="cart-total"><span>Total estimado</span><span>${formatMoney(cartSubtotal + serviceFee, state.settings.currency)}</span></div>
     </section>
     <p class="field-hint wizard-section">El pago se registra al cerrar el pedido desde Pedidos.</p>
     <span id="order-form-live" class="sr-only" aria-live="polite"></span>
@@ -762,7 +769,7 @@ function modalContent(current) {
       };
     case "close-order":
       return {
-        body: `<form id="close-order-form" data-form="close-order"><input type="hidden" name="orderId" value="${esc(current.data.orderId)}"><fieldset class="payment-method-field"><legend>Medio de pago</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago">${ORDER_PAYMENT_METHODS.filter((method) => state.settings.paymentMethods.includes(method)).map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="close-payment-${index}" name="paymentMethod" value="${esc(method)}" ${index === 0 ? "checked" : ""} required><label for="close-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div></fieldset><p class="cart-total"><span>Total a cobrar</span><strong>${formatMoney(current.data.total, state.settings.currency)}</strong></p>${activeCashSession(state) ? "" : `<div class="notice wizard-section">${icon("alert")}<span>La caja está cerrada; el pago se registrará en el pedido, pero no en un turno activo.</span></div>`}</form>`,
+        body: `<form id="close-order-form" data-form="close-order"><input type="hidden" name="orderId" value="${esc(current.data.orderId)}"><fieldset class="payment-method-field"><legend>Medio de pago</legend><div class="payment-options" role="radiogroup" aria-label="Medio de pago">${ORDER_PAYMENT_METHODS.filter((method) => state.settings.paymentMethods.includes(method)).map((method, index) => `<span class="channel-option payment-option"><input type="radio" id="close-payment-${index}" name="paymentMethod" value="${esc(method)}" ${index === 0 ? "checked" : ""} required><label for="close-payment-${index}">${icon(method === "Efectivo" ? "wallet" : "card")}${esc(method)}</label></span>`).join("")}</div></fieldset>${current.data.serviceFee ? `<div class="stat-row"><span>Subtotal</span><strong>${formatMoney(current.data.subtotal, state.settings.currency)}</strong></div><div class="stat-row"><span>Servicio Dinky (5%)</span><strong>${formatMoney(current.data.serviceFee, state.settings.currency)}</strong></div>` : ""}<p class="cart-total"><span>Total a cobrar</span><strong>${formatMoney(current.data.total, state.settings.currency)}</strong></p>${activeCashSession(state) ? "" : `<div class="notice wizard-section">${icon("alert")}<span>La caja está cerrada; el pago se registrará en el pedido, pero no en un turno activo.</span></div>`}</form>`,
         footer: `<button class="button" type="button" data-action="close-modal">Cancelar</button><button class="button primary" type="submit" form="close-order-form">${icon("check")}Registrar pago y cerrar</button>`,
       };
     case "switch-role":
@@ -932,8 +939,16 @@ function createOrder() {
     notify("Indica un nombre para identificar el pedido para llevar.", "error");
     return;
   }
+  if (draft.channel === "dinky" && !draft.customerName.trim()) {
+    notify("Indica un nombre para identificar el pedido de Dinky.", "error");
+    return;
+  }
   if (draft.channel === "delivery" && (!draft.customerName.trim() || !draft.address.trim())) {
     notify("Completa el nombre y la dirección del pedido.", "error");
+    return;
+  }
+  if (draft.channel === "dinein" && !draft.tableId) {
+    notify("Selecciona el número de mesa para el pedido.", "error");
     return;
   }
   const table = state.tables.find((item) => item.id === draft.tableId);
@@ -988,8 +1003,16 @@ function saveEditedOrder() {
     notify("Indica un nombre para identificar el pedido para llevar.", "error");
     return;
   }
+  if (draft.channel === "dinky" && !draft.customerName.trim()) {
+    notify("Indica un nombre para identificar el pedido de Dinky.", "error");
+    return;
+  }
   if (draft.channel === "delivery" && (!draft.customerName.trim() || !draft.address.trim())) {
     notify("Completa el nombre y la dirección del pedido.", "error");
+    return;
+  }
+  if (draft.channel === "dinein" && !draft.tableId) {
+    notify("Selecciona el número de mesa para el pedido.", "error");
     return;
   }
   const table = state.tables.find((item) => item.id === draft.tableId);
@@ -2042,9 +2065,7 @@ function actionClicked(action) {
     case "view-kitchen-order": {
       const order = state.orders.find((item) => item.id === value && item.status !== "delivered");
       if (!order) return notify("La comanda ya no está disponible.", "warning");
-      const location = order.channel === "dinein"
-        ? (order.tableName || "En mesa")
-        : order.channel === "delivery" ? "Delivery" : "Para llevar";
+      const location = order.channel === "dinein" ? (order.tableName || "En mesa") : channelLabel(order.channel);
       openModal("kitchen-order", {
         orderId: value,
         title: `Pedido ${orderDisplayId(order)}`,
@@ -2061,6 +2082,8 @@ function actionClicked(action) {
       if (!order) return notify("El pedido ya no está disponible para cobrar.", "warning");
       openModal("close-order", {
         orderId: order.id,
+        subtotal: orderSubtotal(order),
+        serviceFee: orderServiceFee(order),
         total: orderTotal(order),
         title: `Cerrar pedido ${orderDisplayId(order)}`,
       });
