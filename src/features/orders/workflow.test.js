@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { closeReadyOrder, paidOrders, sendEditedOrderToKitchen } from "./workflow.js";
+import { closeReadyOrder, paidOrders, removeReadyOrder, sendEditedOrderToKitchen } from "./workflow.js";
 
 function stateWithReadyOrder() {
   return {
@@ -104,4 +104,26 @@ test("keeps only paid orders in the sales list", () => {
   ];
 
   assert.deepEqual(paidOrders(orders).map((order) => order.id), ["paid"]);
+});
+
+test("removes only a ready, unpaid order", () => {
+  const state = stateWithReadyOrder();
+
+  const removed = removeReadyOrder(state, "order-1");
+
+  assert.equal(removed.id, "order-1");
+  assert.deepEqual(state.orders, []);
+  assert.throws(() => removeReadyOrder(state, "order-1"), /ya no está disponible/);
+});
+
+test("does not remove an order that is not ready or has been paid", () => {
+  const state = stateWithReadyOrder();
+  state.orders[0].status = "preparing";
+  assert.throws(() => removeReadyOrder(state, "order-1"), /pedidos listos/);
+  assert.equal(state.orders.length, 1);
+
+  state.orders[0].status = "ready";
+  state.orders[0].payment = { paidAt: "already-paid" };
+  assert.throws(() => removeReadyOrder(state, "order-1"), /pedidos listos/);
+  assert.equal(state.orders.length, 1);
 });

@@ -6,6 +6,19 @@ export function paidOrders(orders) {
   return orders.filter((order) => Boolean(order.payment?.paidAt));
 }
 
+export function removeReadyOrder(state, orderId) {
+  const index = state.orders.findIndex((order) => order.id === orderId);
+  if (index < 0) throw new Error("El pedido ya no está disponible.");
+
+  const order = state.orders[index];
+  if (order.status !== "ready" || order.payment?.paidAt) {
+    throw new Error("Solo se pueden eliminar pedidos listos que aún no estén pagados.");
+  }
+
+  state.orders.splice(index, 1);
+  return order;
+}
+
 export function sendEditedOrderToKitchen(state, orderId, changes, updatedAt) {
   const order = state.orders.find((item) => item.id === orderId);
   if (!order) throw new Error("El pedido ya no está disponible.");
