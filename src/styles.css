@@ -403,6 +403,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .menu-picker:nth-child(4n + 2) { background: #eaf5eb; border-color: #cfe4d1; }
 .menu-picker:nth-child(4n + 3) { background: #fff5d8; border-color: #f0dfad; }
 .menu-picker:nth-child(4n) { background: #e8f3fb; border-color: #cbdfee; }
+.menu-picker.half-and-half-picker { background: linear-gradient(145deg, #fff0e5, #ffdfd2); border: 2px solid #d96846; box-shadow: 0 4px 13px rgb(195 75 47 / 17%); }
+.half-and-half-picker .menu-picker-trigger strong { color: #963a26; font-size: 15px; }
+.half-and-half-picker .menu-picker-trigger span { color: #a83b25; font-size: 11px; }
 .menu-picker-trigger { display: flex; width: 100%; min-height: 88px; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 9px; background: transparent; border: 0; cursor: pointer; text-align: center; }
 .menu-picker-trigger strong { display: -webkit-box; overflow: hidden; color: var(--ink); font: 750 13px/1.3 "Manrope", sans-serif; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 .menu-picker-trigger span { color: var(--brand); font: 750 15px "Manrope", sans-serif; }
