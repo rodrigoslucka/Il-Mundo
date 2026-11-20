@@ -144,8 +144,19 @@ export function activeCashSession(state) {
   return state.cashSessions.find((session) => !session.closedAt);
 }
 
+export function orderSubtotal(order) {
+  const subtotal = order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  return Math.round(subtotal * 100) / 100;
+}
+
+export function orderServiceFee(order) {
+  return order.channel === "dinky"
+    ? Math.round(orderSubtotal(order) * 0.05 * 100) / 100
+    : 0;
+}
+
 export function orderTotal(order) {
-  return order.items.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  return orderSubtotal(order) + orderServiceFee(order);
 }
 
 export function formatMoney(amount, currency = "BOB") {

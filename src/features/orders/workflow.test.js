@@ -58,6 +58,16 @@ test("rounds the payment amount to the displayed currency precision", () => {
   assert.equal(order.payment.amount, 0.3);
 });
 
+test("adds and records the 5% Dinky service fee", () => {
+  const state = stateWithReadyOrder();
+  state.orders[0].channel = "dinky";
+
+  const order = closeReadyOrder(state, "order-1", "QR", "2026-11-19T23:00:00.000Z");
+
+  assert.equal(order.payment.amount, 25.2);
+  assert.equal(state.cashSessions[0].transactions[0].amount, 25.2);
+});
+
 test("sends an edited ready order back to the kitchen as a new order", () => {
   const state = stateWithReadyOrder();
 
