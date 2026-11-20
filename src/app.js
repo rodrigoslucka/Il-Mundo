@@ -31,8 +31,10 @@ import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, d
 import { renderCashPage } from "./features/cash/page.js";
 import { formatKitchenTicketItems } from "./features/kitchen/format-ticket-items.js";
 import { closeReadyOrder, ORDER_PAYMENT_METHODS, paidOrders, removeReadyOrder, sendEditedOrderToKitchen } from "./features/orders/workflow.js";
+import { halfAndHalfPrice, largePizzaPrice } from "./features/orders/half-and-half.js";
 
 const app = document.querySelector("#app");
+const HALF_AND_HALF_OPTION_ID = "half-and-half-option";
 installDiagnostics();
 const iconPaths = {
   home: '<path d="m3 10 9-7 9 7"/><path d="M5 9v11h14V9"/><path d="M9 20v-7h6v7"/>',
@@ -634,8 +636,15 @@ function defaultOrderVariant(product) {
     : variants[0];
 }
 
+function halfAndHalfPizzas() {
+  return state.menu
+    .filter((product) => largePizzaPrice(product) !== null)
+    .map((product) => ({ product, price: largePizzaPrice(product) }));
+}
+
 function menuChoiceDialog() {
   if (!draft?.selectedProductId) return "";
+  if (draft.selectedProductId === HALF_AND_HALF_OPTION_ID) return halfAndHalfChoiceDialog();
   const product = state.menu.find((item) => item.id === draft.selectedProductId && item.active);
   if (!product) return "";
   const variants = selectableVariants(product);
@@ -664,8 +673,30 @@ function menuChoiceDialog() {
   </div>`;
 }
 
+function halfAndHalfChoiceDialog() {
+  const pizzas = halfAndHalfPizzas();
+  const first = pizzas.find(({ product }) => product.id === draft.halfAndHalfFirstId);
+  const second = pizzas.find(({ product }) => product.id === draft.halfAndHalfSecondId);
+  const validSelection = first && second && first.product.id !== second.product.id;
+  const price = validSelection ? halfAndHalfPrice(first.price, second.price) : null;
+  const options = (selectedId) => `<option value="">Selecciona una pizza Grande</option>${pizzas.map(({ product, price: largePrice }) => `<option value="${esc(product.id)}" ${selectedId === product.id ? "selected" : ""}>${esc(product.name)} · ${formatMoney(largePrice, state.settings.currency)}</option>`).join("")}`;
+  const selectedQuantity = draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] || 1;
+
+  return `<div class="menu-choice-backdrop">
+    <section class="menu-choice-dialog" role="group" aria-label="Opciones de pizza mitad y mitad">
+      <div class="menu-choice-head"><div><span>Pizzas · Grande</span><h3>Mitad y mitad</h3></div><button type="button" class="icon-button" data-action="close-product-choice" aria-label="Cerrar">${icon("close")}</button></div>
+      <p class="menu-choice-hint">Elige dos pizzas grandes diferentes. Se cobrará la mitad del precio de cada una.</p>
+      <div class="form-field"><label for="half-and-half-first">Primera mitad</label><select id="half-and-half-first" class="form-select" data-half-pizza="first">${options(draft.halfAndHalfFirstId)}</select></div>
+      <div class="form-field"><label for="half-and-half-second">Segunda mitad</label><select id="half-and-half-second" class="form-select" data-half-pizza="second">${options(draft.halfAndHalfSecondId)}</select></div>
+      <p class="cart-total"><span>Precio de la pizza Grande</span><strong>${price === null ? "Selecciona dos pizzas diferentes" : formatMoney(price, state.settings.currency)}</strong></p>
+      <div class="menu-picker-add-row"><span class="quantity-control menu-picker-quantity"><button type="button" data-action="half-and-half-quantity:-1" aria-label="Quitar una unidad">−</button><strong>${selectedQuantity}</strong><button type="button" data-action="half-and-half-quantity:1" aria-label="Sumar una unidad">+</button></span><button type="button" class="button primary menu-picker-add" data-action="add-half-and-half" ${price === null ? "disabled" : ""}>Agregar ${selectedQuantity}</button></div>
+    </section>
+  </div>`;
+}
+
 function orderFormMenu() {
   const categories = state.settings.menuCategories || [...new Set(state.menu.map((product) => product.category))];
+  const availableHalfAndHalfPizzas = halfAndHalfPizzas();
   const productsByCategory = categories.map((category) => ({
     category,
     products: state.menu.filter((product) => product.active && product.category === category),
@@ -679,7 +710,7 @@ function orderFormMenu() {
   const productTiles = productsByCategory.map(({ category, products }) => `
     <section class="order-menu-category">
       <h4>${esc(category)}</h4>
-      ${products.length
+      ${products.length || (category === "Pizzas" && availableHalfAndHalfPizzas.length >= 2)
         ? `<div class="new-order-menu-list">${products.map((product) => {
           const variant = selectableVariants(product).find((item) => item.name === draft.selectedVariants[product.id]) || defaultOrderVariant(product);
           return `<article class="menu-picker">
@@ -687,7 +718,11 @@ function orderFormMenu() {
               <strong>${esc(product.name)}</strong><span>${variant ? formatMoney(variant.price, state.settings.currency) : "Sin precio disponible"}</span>
             </button>
           </article>`;
-        }).join("")}</div>`
+        }).join("")}${category === "Pizzas" && availableHalfAndHalfPizzas.length >= 2 ? `<article class="menu-picker half-and-half-picker">
+          <button type="button" class="menu-picker-trigger" data-action="select-half-and-half" aria-haspopup="dialog" aria-expanded="${draft.selectedProductId === HALF_AND_HALF_OPTION_ID}">
+            <strong>Mitad y mitad</strong><span>Elige dos sabores · Grande</span>
+          </button>
+        </article>` : ""}</div>`
         : `<p class="small muted">No hay productos activos en esta categoría.</p>`}
     </section>`).join("");
   const cartHtml = draft.items.length
@@ -860,6 +895,8 @@ function startNewOrder(options = {}) {
     selectedVariants: Object.fromEntries(state.menu.map((item) => [item.id, defaultOrderVariant(item)?.name])),
     selectedExtras: {},
     itemNotes: {},
+    halfAndHalfFirstId: "",
+    halfAndHalfSecondId: "",
   };
   openModal("new-order", { wide: true });
 }
@@ -886,6 +923,8 @@ function startEditingOrder(orderId) {
     selectedVariants: Object.fromEntries(state.menu.map((item) => [item.id, defaultOrderVariant(item)?.name])),
     selectedExtras: {},
     itemNotes: {},
+    halfAndHalfFirstId: "",
+    halfAndHalfSecondId: "",
   };
   for (const item of order.items) {
     if (item.menuItemId && item.variant) draft.selectedVariants[item.menuItemId] = item.variant;
@@ -1271,6 +1310,13 @@ function handleNewOrder(event) {
 
 function handleChange(event) {
   const target = event.target;
+  if (target.matches("[data-half-pizza]")) {
+    if (!draft) return;
+    if (target.dataset.halfPizza === "first") draft.halfAndHalfFirstId = target.value;
+    else draft.halfAndHalfSecondId = target.value;
+    renderModal();
+    return;
+  }
   if (target.matches("[data-member-role]")) {
     if (!isAdmin()) return notify("Solo el administrador puede modificar cuentas.", "error");
     const memberId = target.dataset.memberRole;
@@ -1351,7 +1397,7 @@ function renderModal() {
       footer?.remove();
     }
     if (content.overlay) layer.insertAdjacentHTML("beforeend", content.overlay);
-    const choiceButton = layer.querySelector(".menu-choice-dialog button:not([disabled])");
+    const choiceButton = layer.querySelector(".menu-choice-dialog [data-half-pizza]:not([disabled]), .menu-choice-dialog button:not([disabled])");
     const restore = choiceButton || (oldFocusId
       ? layer.querySelector(`#${CSS.escape(oldFocusId)}`)
       : oldAction
@@ -1940,6 +1986,33 @@ function addProductToDraft(productId) {
   notify(`${product.name} se agregó a la comanda.`, "success", 1800);
 }
 
+function addHalfAndHalfToDraft() {
+  if (!draft) return;
+  captureDraftForm();
+  const pizzas = halfAndHalfPizzas();
+  const first = pizzas.find(({ product }) => product.id === draft.halfAndHalfFirstId);
+  const second = pizzas.find(({ product }) => product.id === draft.halfAndHalfSecondId);
+  if (!first || !second || first.product.id === second.product.id) {
+    return notify("Elige dos pizzas Grandes diferentes que estén disponibles.", "warning");
+  }
+
+  const quantity = draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] || 1;
+  draft.items.push({
+    category: "Pizzas",
+    name: `Mitad y mitad (${first.product.name} / ${second.product.name})`,
+    variant: "Grande",
+    quantity,
+    price: halfAndHalfPrice(first.price, second.price),
+    extras: [],
+    notes: "",
+  });
+  draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] = 1;
+  draft.selectedProductId = "";
+  renderModal();
+  document.querySelector('[data-action="select-half-and-half"]')?.focus({ preventScroll: true });
+  notify("Pizza mitad y mitad agregada a la comanda.", "success", 1800);
+}
+
 function adjustDraftItem(index, change) {
   captureDraftForm();
   const item = draft?.items[index];
@@ -2059,7 +2132,10 @@ function actionClicked(action) {
         const productId = draft.selectedProductId;
         draft.selectedProductId = "";
         renderModal();
-        document.querySelector(`[data-action="select-product:${CSS.escape(encodeURIComponent(productId))}"]`)?.focus({ preventScroll: true });
+        const action = productId === HALF_AND_HALF_OPTION_ID
+          ? "select-half-and-half"
+          : `select-product:${encodeURIComponent(productId)}`;
+        document.querySelector(`[data-action="${CSS.escape(action)}"]`)?.focus({ preventScroll: true });
       }
       return;
     case "new-order":
@@ -2098,6 +2174,13 @@ function actionClicked(action) {
       renderModal();
       return;
     }
+    case "select-half-and-half": {
+      if (!draft) return;
+      draft.selectedProductId = HALF_AND_HALF_OPTION_ID;
+      draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] ||= 1;
+      renderModal();
+      return;
+    }
     case "select-variant": {
       if (!draft) return;
       const productId = decodeURIComponent(parts[0] || "");
@@ -2121,6 +2204,17 @@ function actionClicked(action) {
       renderModal();
       return;
     }
+    case "half-and-half-quantity":
+      if (!draft) return;
+      draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] = Math.max(
+        1,
+        (draft.selectedQuantities[HALF_AND_HALF_OPTION_ID] || 1) + Number(value),
+      );
+      renderModal();
+      return;
+    case "add-half-and-half":
+      addHalfAndHalfToDraft();
+      return;
     case "add-item":
       addProductToDraft(decodeURIComponent(value));
       return;
