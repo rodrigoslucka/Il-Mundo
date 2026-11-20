@@ -27,10 +27,7 @@ import {
 import { createCashWorkbook, cashWorkbookFilename, createDailyBalanceWorkbook, dailyBalanceWorkbookFilename } from "./features/cash/export.js";
 import { renderCashPage } from "./features/cash/page.js";
 import { formatKitchenTicketItems } from "./features/kitchen/format-ticket-items.js";
-<<<<<<< HEAD
-=======
 import { closeReadyOrder, ORDER_PAYMENT_METHODS, paidOrders, sendEditedOrderToKitchen } from "./features/orders/workflow.js";
->>>>>>> 5fb1a54 (feat: add order payments and sales workflow)
 
 const app = document.querySelector("#app");
 installDiagnostics();
